@@ -80,7 +80,11 @@ echo "==> stopping hermes (frees hermes-tools for exclusive read-write attach)"
 HERMES_STOPPED=1
 
 echo "==> launching disposable helper (project: $PROJECT, image: $HELPER_IMAGE)"
-incus --project "$PROJECT" launch "$HELPER_IMAGE" "$HELPER"
+# The hermes project's `default` profile has no devices (incus-compose puts
+# the root disk directly on each instance it manages, not in the profile),
+# so a plain `incus launch` here has no root disk to attach — found by
+# testing 2026-08-01. -s/--storage supplies one explicitly.
+incus --project "$PROJECT" launch "$HELPER_IMAGE" "$HELPER" --storage "$POOL"
 HELPER_CREATED=1
 
 echo "==> waiting for helper to come up"
