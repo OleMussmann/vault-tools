@@ -41,6 +41,7 @@ POOL="${INCUS_POOL:-local}"
 VOLUME="${HERMES_TOOLS_VOLUME:-vol-hermes-tools}"
 HELPER="hermes-tools-helper"
 HELPER_IMAGE="${HELPER_IMAGE:-images:alpine/edge}"
+DEVICE_NAME="tools"
 STACK_DIR="${STACK_DIR:?set STACK_DIR to the path of your hermes stack directory (compose.yaml/.env)}"
 VAULT_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_OUT="$(mktemp -d)"
@@ -57,7 +58,7 @@ HELPER_ATTACHED=0
 cleanup() {
   local status=$?
   if [[ "$HELPER_ATTACHED" -eq 1 ]]; then
-    incus --project "$PROJECT" storage volume detach "$POOL" "$VOLUME" "$HELPER" 2>/dev/null || true
+    incus --project "$PROJECT" storage volume detach "$POOL" "$VOLUME" "$HELPER" "$DEVICE_NAME" 2>/dev/null || true
   fi
   if [[ "$HELPER_CREATED" -eq 1 ]]; then
     incus --project "$PROJECT" delete --force "$HELPER" 2>/dev/null || true
@@ -94,7 +95,11 @@ for _ in $(seq 1 20); do
 done
 
 echo "==> attaching $VOLUME read-write to helper"
-incus --project "$PROJECT" storage volume attach "$POOL" "$VOLUME" "$HELPER" /opt/tools
+# Positional syntax is <pool> <volume> <instance> <device name> <path> — the
+# device name is required, not optional; omitting it and passing only a path
+# gets the path itself rejected as an invalid device name. Found by running
+# this for real 2026-08-01.
+incus --project "$PROJECT" storage volume attach "$POOL" "$VOLUME" "$HELPER" "$DEVICE_NAME" /opt/tools
 HELPER_ATTACHED=1
 
 echo "==> pushing vault"
