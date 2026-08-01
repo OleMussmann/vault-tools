@@ -22,9 +22,36 @@ VAULT_TOOLS_REV="@VAULT_TOOLS_REV@"
 TOOL_SCHEMA_VERSION=1
 SCHEMA_FIELDS=(type status confidence updated)
 
-VAULT_DIR="${VAULT_DIR:?set VAULT_DIR to the path of your vault clone}"
-
 die() { echo "vault: error: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage:
+  vault brief <project>                   full context on a project, one call
+  vault note <project> <type> "<title>"   create a note from a template
+  vault save "<message>"                  add, commit, and push
+  vault check                             validate templates/ and notes against the schema
+  vault --version                         print the built commit
+  vault --help                            this text
+
+types: plan | log | note | decision — see AGENTS.md for the frontmatter contract.
+plan/log/decision are project-scoped (projects/<project>/<type-dir>/).
+note is vault-wide (notes/), filed as notes/YYYY-MM-DD-<project>-<slug>.md —
+<project> is a namespace prefix here, not a subfolder; use a topic like
+"infra" or "general" for anything not tied to one project.
+
+config (environment, not the repo):
+  VAULT_DIR   path to your vault clone (required)
+EOF
+}
+
+# --help/-h must work without VAULT_DIR set, so this check comes before the
+# `:?` below rather than living only in the final case statement.
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+esac
+
+VAULT_DIR="${VAULT_DIR:?set VAULT_DIR to the path of your vault clone}"
 
 cd "$VAULT_DIR" || die "VAULT_DIR '$VAULT_DIR' is not a directory"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
@@ -51,27 +78,6 @@ slugify() {
 # s/// — otherwise a title containing / or & corrupts the substitution.
 sed_escape_repl() {
   printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
-}
-
-usage() {
-  cat <<'EOF'
-usage:
-  vault brief <project>                   full context on a project, one call
-  vault note <project> <type> "<title>"   create a note from a template
-  vault save "<message>"                  add, commit, and push
-  vault check                             validate templates/ and notes against the schema
-  vault --version                         print the built commit
-  vault --help                            this text
-
-types: plan | log | note | decision — see AGENTS.md for the frontmatter contract.
-plan/log/decision are project-scoped (projects/<project>/<type-dir>/).
-note is vault-wide (notes/), filed as notes/YYYY-MM-DD-<project>-<slug>.md —
-<project> is a namespace prefix here, not a subfolder; use a topic like
-"infra" or "general" for anything not tied to one project.
-
-config (environment, not the repo):
-  VAULT_DIR   path to your vault clone (required)
-EOF
 }
 
 cmd_brief() {
@@ -214,6 +220,6 @@ case "${1:-}" in
   save)       shift; cmd_save "$@" ;;
   check)      shift; cmd_check "$@" ;;
   --version)  echo "vault ${VAULT_TOOLS_REV}" ;;
-  --help|-h|"") usage ;;
+  "")         usage ;;
   *) die "unknown command '$1' — try 'vault --help'" ;;
 esac

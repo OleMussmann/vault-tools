@@ -24,6 +24,30 @@
 
 set -euo pipefail
 
+die() { echo "error: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage:
+  stack check          compare the pinned HERMES_TAG against the newest upstream tag
+  stack update <tag>   snapshot the data volume, pin, recreate, verify
+  stack --help         this text
+
+config (environment, not the repo):
+  STACK_DIR       path to the directory holding compose.yaml/.env (required)
+  HERMES_SERVICE  compose service name (default: hermes)
+  INCUS_POOL      storage pool (default: local)
+  HERMES_VOLUME   custom volume name (default: vol-hermes-data)
+  INCUS_PROJECT   incus project (default: detected from compose.yaml's name:)
+EOF
+}
+
+# --help/-h must work without STACK_DIR set, so this check comes before the
+# `:?` below rather than living only in the final case statement.
+case "${1:-}" in
+  --help|-h) usage; exit 0 ;;
+esac
+
 STACK_DIR="${STACK_DIR:?set STACK_DIR to the path of your hermes stack directory}"
 ENV_FILE="$STACK_DIR/.env"
 COMPOSE_FILE="$STACK_DIR/compose.yaml"
@@ -39,8 +63,6 @@ VOLUME="${HERMES_VOLUME:-vol-hermes-data}"
 
 READY_TRIES="${READY_TRIES:-20}"          # 20 x 3s = 60s ceiling
 READY_INTERVAL="${READY_INTERVAL:-3}"
-
-die() { echo "error: $*" >&2; exit 1; }
 
 # The Incus project takes its name from `name:` in compose.yaml, NOT from the
 # directory. Falling back to the directory name is a guess and may be wrong.
