@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# stack — check for and apply Hermes image updates.
+#
+# Runs on the workstation, not in a container.
+# Requires: incus-compose, incus, curl, jq, git.
+#
+# Expects, in STACK_DIR:
+#   compose.yaml   with  name: hermes
+#                  and   image: nousresearch/hermes-agent:${HERMES_TAG}
+#   .env           with  HERMES_TAG=v2026.7.30
+#
+# .env holds version pins only — Hermes reads its API keys from
+# /opt/data/.env inside the volume, so this file is safe to commit.
+#
+# Verified 2026-07-31 against incus-compose on IncusOS. See IMPLEMENTATION.md
+# for the test results this encodes.
+#
+# Config from the environment, never guessed:
+#   STACK_DIR   path to the directory holding compose.yaml/.env (required)
+#
+# STACK_DIR must be explicit, not self-detected from the script's own
+# location — as a vault-tools package this file runs from the Nix store, not
+# from inside the stack directory it operates on.
+
+set -euo pipefail
+
+STACK_DIR="${STACK_DIR:?set STACK_DIR to the path of your hermes stack directory}"
+ENV_FILE="$STACK_DIR/.env"
+COMPOSE_FILE="$STACK_DIR/compose.yaml"
+REPO="nousresearch/hermes-agent"          # canonical registry: docker.io
+SERVICE="${HERMES_SERVICE:-hermes}"
+TAG_RE='^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(\.[0-9]+)?$'
+
+# Confirmed on IncusOS: pool is `local` (zfs), and incus-compose names custom
+# volumes vol-<compose-volume>, scoped to a project named after the compose
+# project. Verify with: incus --project <p> storage volume list <pool>
+POOL="${INCUS_POOL:-local}"
+VOLUME="${HERMES_VOLUME:-vol-hermes-data}"
+
+READY_TRIES="${READY_TRIES:-20}"          # 20 x 3s = 60s ceiling
+READY_INTERVAL="${READY_INTERVAL:-3}"
+
+die() { echo "error: $*" >&2; exit 1; }
+
+# The Incus project takes its name from `name:` in compose.yaml, NOT from the
+# directory. Falling back to the directory name is a guess and may be wrong.
+detect_project() {
+  local n=""
+  [[ -f "$COMPOSE_FILE" ]] && n="$(grep -E '^name:' "$COMPOSE_FILE" | head -1 | sed 's/^name:[[:space:]]*//; s/[[:space:]]*$//')"
+  echo "${n:-$(basename "$STACK_DIR")}"
+}
+PROJECT="${INCUS_PROJECT:-$(detect_project)}"
+
+preflight() {
+  if ! incus --project "$PROJECT" storage volume show "$POOL" "$VOLUME" >/dev/null 2>&1; then
+    echo "cannot find volume '${VOLUME}' on pool '${POOL}' in project '${PROJECT}'" >&2
+    echo >&2
+    incus --project "$PROJECT" storage volume list "$POOL" >&2 || true
+    echo >&2
+    die "set INCUS_POOL / HERMES_VOLUME / INCUS_PROJECT to match"
+  fi
+}
+
+version_of() {
+  ( cd "$STACK_DIR" && incus-compose exec "$SERVICE" -- hermes version 2>/dev/null ) || true
+}
+
+current_tag() {
+  grep -E '^HERMES_TAG=' "$ENV_FILE" | head -1 | cut -d= -f2- \
+    || die "no HERMES_TAG in $ENV_FILE"
+}
+
+# Fetching and filtering are deliberately separate. Combined in one pipeline
+# under `pipefail`, a non-matching grep exits 1 and is indistinguishable from a
+# network failure — so an upstream tag-scheme change would be misreported as a
+# connectivity problem.
+fetch_tags() {
+  curl -fsSL "https://hub.docker.com/v2/repositories/${REPO}/tags?page_size=100&ordering=last_updated" \
+    | jq -r '.results[].name'
+}
+
+# Upstream uses v-prefixed CalVer with an optional revision component:
+# v2026.7.30, v2026.7.7.2. Excludes the mutable `latest` and `main` pointers.
+newest_tag() {
+  printf '%s\n' "$1" | { grep -E "$TAG_RE" || true; } | sort -V | tail -1
+}
+
+cmd_check() {
+  local cur tags new
+  cur="$(current_tag)"
+
+  tags="$(fetch_tags)" || die "could not reach the registry"
+  new="$(newest_tag "$tags")"
+
+  if [[ -z "$new" ]]; then
+    echo "no tags matched ${TAG_RE}" >&2
+    echo "upstream may have changed its versioning scheme. Saw:" >&2
+    printf '%s\n' "$tags" | head -8 | sed 's/^/  /' >&2
+    die "update TAG_RE in stack"
+  fi
+
+  printf 'current: %s\nlatest:  %s\n' "$cur" "$new"
+  [[ "$cur" == "$new" ]] && { echo "up to date"; return 0; }
+
+  printf '\nchangelog: https://github.com/NousResearch/hermes-agent/releases/tag/%s\n' "$new"
+  printf 'apply:     stack update %s\n' "$new"
+}
+
+cmd_update() {
+  local new="${1:-}" cur snap before after
+  [[ -n "$new" ]] || die "usage: stack update <tag>"
+  cur="$(current_tag)"
+  [[ "$cur" == "$new" ]] && { echo "already on $new"; return 0; }
+
+  preflight
+
+  # The image tag is CalVer (v2026.7.30); `hermes version` reports the app
+  # version (0.19.1). They never match, so verification compares the app
+  # version before and after rather than against the tag.
+  before="$(version_of)"
+
+  snap="pre-${new}-$(date +%Y%m%d%H%M)"
+  echo "==> snapshotting ${PROJECT}:${POOL}/${VOLUME} as ${snap}"
+  incus --project "$PROJECT" storage volume snapshot "$POOL" "$VOLUME" "$snap"
+
+  echo "==> pinning ${cur} -> ${new}"
+  sed -i "s|^HERMES_TAG=.*|HERMES_TAG=${new}|" "$ENV_FILE"
+
+  # incus-compose `ensure` checks that the instance EXISTS, not that it matches
+  # the image — `up --pull always` alone refreshes the cache but leaves a
+  # running instance on the old image, SILENTLY. --recreate deletes it first.
+  # Custom volumes are untouched, so /opt/data survives. Verified 2026-07-31.
+  #
+  # ASSUMPTION: the trailing service argument scopes the recreate. Untested
+  # against a multi-service stack. If it does not scope, every update also
+  # bounces sidecars. Test with any throwaway second service.
+  echo "==> pulling and recreating"
+  ( cd "$STACK_DIR" && incus-compose up -d --recreate --pull always "$SERVICE" )
+
+  echo "==> waiting for readiness"
+  after=""
+  for _ in $(seq 1 "$READY_TRIES"); do
+    sleep "$READY_INTERVAL"
+    after="$(version_of)"
+    [[ -n "$after" && "$after" != "$before" ]] && break
+    printf '.'
+  done
+  echo
+
+  ( cd "$STACK_DIR" && incus-compose ps )
+
+  if [[ -z "$after" || "$after" == "$before" ]]; then
+    echo
+    echo "!! verification failed after $((READY_TRIES * READY_INTERVAL))s"
+    echo "   before: ${before:-<none>}"
+    echo "   after:  ${after:-<no output>}"
+    echo "   identical output usually means the instance was not recreated."
+    echo "   (false alarm if two tags ship the same app version — check by hand)"
+    echo "   logs:       incus --project ${PROJECT} console ${SERVICE}-1 --show-log"
+    echo "   roll back:  stack update ${cur}"
+    echo "   or restore: incus --project ${PROJECT} storage volume restore ${POOL} ${VOLUME} ${snap}"
+    exit 1
+  fi
+  echo "    ${before:-<none>}"
+  echo " -> ${after}"
+
+  # Commit but never push. Auto-pushing adds auth prompts, rejected pushes and
+  # branch-protection failures to a run that just succeeded. Unpushed pins do
+  # drift between machines though, so say so rather than stay silent.
+  if git -C "$STACK_DIR" commit -q -m "hermes: ${cur} -> ${new}" -- "$ENV_FILE" 2>/dev/null; then
+    echo "==> pinned and committed (not pushed)"
+    if git -C "$STACK_DIR" remote | grep -q .; then
+      echo "    push when ready: git -C ${STACK_DIR} push"
+    fi
+  else
+    echo "==> pinned (not committed — no repo, or nothing to commit)"
+  fi
+
+  echo "==> done. rollback: stack update ${cur}"
+}
+
+case "${1:-check}" in
+  check)  cmd_check ;;
+  update) shift; cmd_update "${1:-}" ;;
+  *)      die "usage: stack {check | update <tag>}" ;;
+esac

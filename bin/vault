@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# vault — access tooling for the shared Hermes/Pi memory vault.
+#
+# Five commands, no more: brief, note, save, check, --version. Schema
+# (frontmatter fields, folder layout) lives in the vault's AGENTS.md and
+# templates/, not here — this script only moves files, drives git, and
+# validates the two against each other.
+#
+# Dependencies: git, coreutils, sed, ripgrep. No jq/yq — must run unmodified
+# in the stock Hermes image and on the workstation/Pi.
+#
+# Config from the environment, never the repo:
+#   VAULT_DIR   path to the vault clone (required)
+
+set -euo pipefail
+
+VAULT_TOOLS_REV="@VAULT_TOOLS_REV@"
+
+# The schema version this build understands. Bump only alongside a change to
+# SCHEMA_FIELDS below (or any other breaking change to the frontmatter
+# contract) — never for a compatible addition. See cmd_check.
+TOOL_SCHEMA_VERSION=1
+SCHEMA_FIELDS=(type status confidence updated)
+
+VAULT_DIR="${VAULT_DIR:?set VAULT_DIR to the path of your vault clone}"
+
+die() { echo "vault: error: $*" >&2; exit 1; }
+
+cd "$VAULT_DIR" || die "VAULT_DIR '$VAULT_DIR' is not a directory"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  || die "VAULT_DIR '$VAULT_DIR' is not a git repo"
+
+# Warn-only, and only in the direction that matters: a vault schema newer
+# than this build understands means notes may be written or read wrong. The
+# reverse (tool understands a newer schema than the vault declares) is the
+# normal state right after updating one machine, so it stays silent.
+check_schema_version() {
+  local vault_schema
+  vault_schema="$(cat .schema-version 2>/dev/null || echo 1)"
+  if [[ "$vault_schema" =~ ^[0-9]+$ ]] && (( vault_schema > TOOL_SCHEMA_VERSION )); then
+    echo "vault: warning: vault schema is v${vault_schema}, this build of vault-tools understands v${TOOL_SCHEMA_VERSION} — update vault-tools" >&2
+  fi
+}
+check_schema_version
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
+}
+
+# Escapes a replacement string for safe use on the right-hand side of sed's
+# s/// — otherwise a title containing / or & corrupts the substitution.
+sed_escape_repl() {
+  printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
+}
+
+usage() {
+  cat <<'EOF'
+usage:
+  vault brief <project>                   full context on a project, one call
+  vault note <project> <type> "<title>"   create a note from a template
+  vault save "<message>"                  add, commit, and push
+  vault check                             validate templates/ and notes against the schema
+  vault --version                         print the built commit
+  vault --help                            this text
+
+types: plan | log | note | decision — see AGENTS.md for the frontmatter contract.
+plan/log/decision are project-scoped (projects/<project>/<type-dir>/).
+note is vault-wide (notes/), filed as notes/YYYY-MM-DD-<project>-<slug>.md —
+<project> is a namespace prefix here, not a subfolder; use a topic like
+"infra" or "general" for anything not tied to one project.
+
+config (environment, not the repo):
+  VAULT_DIR   path to your vault clone (required)
+EOF
+}
+
+cmd_brief() {
+  local project="${1:?usage: vault brief <project>}"
+  local dir="projects/$project"
+  [[ -d "$dir" ]] || die "no such project: $project (looked in $dir)"
+
+  echo "## $dir/README.md"
+  [[ -f "$dir/README.md" ]] && cat "$dir/README.md" || echo "(none)"
+  echo
+  echo "## $dir/tasks.md"
+  [[ -f "$dir/tasks.md" ]] && cat "$dir/tasks.md" || echo "(none)"
+  echo
+
+  local newest
+  # Filenames here are always our own YYYY-MM-DD-slug.md (see slugify) — no
+  # globs, spaces, or newlines to trip on, so plain `ls` is safe.
+  # shellcheck disable=SC2012
+  newest="$(ls -1 "$dir/plans/" 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -n "$newest" ]]; then
+    echo "## $dir/plans/$newest (newest plan)"
+    cat "$dir/plans/$newest"
+  else
+    echo "## plans/ (none yet)"
+  fi
+}
+
+cmd_note() {
+  local project="${1:?usage: vault note <project> <type> \"<title>\"}"
+  local type="${2:?usage: vault note <project> <type> \"<title>\"}"
+  local title="${3:?usage: vault note <project> <type> \"<title>\"}"
+  local template="templates/${type}.md"
+  [[ -f "$template" ]] || die "no template for type '$type' (looked for $template)"
+
+  local date slug dest
+  date="$(date +%Y-%m-%d)"
+  slug="$(slugify "$title")"
+  [[ -n "$slug" ]] || die "title produced an empty slug: '$title'"
+
+  case "$type" in
+    plan)     dest="projects/$project/plans/${date}-${slug}.md" ;;
+    log)      dest="projects/$project/log/${date}-${slug}.md" ;;
+    decision) dest="projects/$project/decisions/${date}-${slug}.md" ;;
+    note)     dest="notes/${date}-${project}-${slug}.md" ;;
+    *)        die "unknown type '$type' — expected plan, log, note, or decision" ;;
+  esac
+
+  if [[ "$type" != "note" ]]; then
+    [[ -d "projects/$project" ]] \
+      || die "no such project: $project (create projects/$project/README.md first)"
+  fi
+
+  [[ -e "$dest" ]] && die "already exists: $dest"
+
+  local esc_title
+  esc_title="$(sed_escape_repl "$title")"
+
+  mkdir -p "$(dirname "$dest")"
+  sed -e "s/^updated: .*/updated: ${date}/" \
+      -e "s/^# TITLE\$/# ${esc_title}/" \
+      "$template" > "$dest"
+
+  echo "$dest"
+}
+
+cmd_save() {
+  local msg="${1:?usage: vault save \"<message>\"}"
+
+  pull_rebase() {
+    if ! git pull --rebase --autostash; then
+      git rebase --abort 2>/dev/null || true
+      die "CONFLICT on pull --rebase — aborted, repo is clean again. Report this; do not resolve it yourself."
+    fi
+  }
+
+  pull_rebase
+
+  git add -A
+  if git diff --cached --quiet; then
+    echo "vault: nothing to commit"
+    return 0
+  fi
+  git commit -m "$msg" >/dev/null
+
+  pull_rebase
+  git push
+}
+
+# Field names in the YAML frontmatter of $1 — the lines strictly between the
+# first "---" and the next one. sed only; no yaml parser available.
+frontmatter_fields() {
+  sed -n '/^---$/,/^---$/{ /^---$/d; p }' "$1" \
+    | grep -oE '^[A-Za-z_][A-Za-z0-9_]*:' | tr -d ':'
+}
+
+# Files that are expected to carry the frontmatter schema: templates, and
+# actual plan/log/decision/note entries. README.md and tasks.md are
+# deliberately excluded — they're human-facing prose, not schema content.
+#
+# Each `find` is `|| true`'d individually: under `set -e`, `find` on a
+# not-yet-created directory (e.g. no notes/ yet) exits non-zero, and without
+# the guard that would abort this function — and the process substitution
+# it runs under — before later `find`s ever ran. Caught by testing against a
+# vault missing a projects/ dir: notes/ silently never got scanned.
+schema_bearing_files() {
+  find templates -maxdepth 1 -type f -name '*.md' 2>/dev/null || true
+  find projects -type f -name '*.md' \
+    \( -path '*/plans/*' -o -path '*/log/*' -o -path '*/decisions/*' \) 2>/dev/null || true
+  find notes -maxdepth 1 -type f -name '*.md' 2>/dev/null || true
+}
+
+cmd_check() {
+  local expected f actual missing extra status=0 checked=0
+  expected="$(printf '%s\n' "${SCHEMA_FIELDS[@]}" | sort)"
+
+  while IFS= read -r f; do
+    checked=$((checked + 1))
+    actual="$(frontmatter_fields "$f" | sort)"
+    missing="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") 2>/dev/null || true)"
+    extra="$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") 2>/dev/null || true)"
+    if [[ -n "$missing" || -n "$extra" ]]; then
+      echo "schema mismatch: $f"
+      [[ -n "$missing" ]] && echo "  missing: $(tr '\n' ' ' <<<"$missing")"
+      [[ -n "$extra" ]] && echo "  unknown: $(tr '\n' ' ' <<<"$extra")"
+      status=1
+    fi
+  done < <(schema_bearing_files)
+
+  if [[ "$checked" -eq 0 ]]; then
+    echo "vault check: nothing to check yet"
+  elif [[ "$status" -eq 0 ]]; then
+    echo "vault check: ok ($checked files)"
+  fi
+  return "$status"
+}
+
+case "${1:-}" in
+  brief)      shift; cmd_brief "$@" ;;
+  note)       shift; cmd_note "$@" ;;
+  save)       shift; cmd_save "$@" ;;
+  check)      shift; cmd_check "$@" ;;
+  --version)  echo "vault ${VAULT_TOOLS_REV}" ;;
+  --help|-h|"") usage ;;
+  *) die "unknown command '$1' — try 'vault --help'" ;;
+esac
