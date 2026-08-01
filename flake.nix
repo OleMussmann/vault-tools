@@ -37,6 +37,21 @@
             );
           };
 
+          # For deployment into the Hermes container, which has no /nix/store:
+          # writeShellApplication's wrapper (above) bakes in an absolute-path
+          # shebang and PATH from runtimeInputs, neither of which resolve
+          # there. This builds straight from the source file instead — its
+          # own shebang (#!/usr/bin/env bash) is already portable, so there's
+          # no wrapper to strip. Same source, still shellchecked, just not
+          # Nix-wrapped. Relies on bin/vault's own command -v preflight
+          # (git, sed, grep, rg) in place of runtimeInputs pinning — those
+          # are confirmed present on the stock Hermes image's PATH.
+          vault-hermes = pkgs.runCommand "vault-hermes" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
+            substitute ${./bin/vault} vault --replace-fail '@VAULT_TOOLS_REV@' '${rev}'
+            shellcheck vault
+            install -Dm555 vault $out/bin/vault
+          '';
+
           stack = pkgs.writeShellApplication {
             name = "stack";
             runtimeInputs = with pkgs; [

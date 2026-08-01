@@ -51,6 +51,16 @@ case "${1:-}" in
   --help|-h) usage; exit 0 ;;
 esac
 
+# On the pinned (workstation/Pi) build these are guaranteed by
+# runtimeInputs in flake.nix and this loop is a no-op. The Hermes copy is
+# deliberately unwrapped (see flake.nix's `vault-hermes` output — no
+# /nix/store shebang or PATH, since the Hermes image has no Nix store) and
+# relies on the container's own PATH instead, so it needs its own check —
+# failing here beats failing confusingly mid-command.
+for _cmd in git sed grep rg; do
+  command -v "$_cmd" >/dev/null 2>&1 || die "required command not found: $_cmd"
+done
+
 VAULT_DIR="${VAULT_DIR:?set VAULT_DIR to the path of your vault clone}"
 
 cd "$VAULT_DIR" || die "VAULT_DIR '$VAULT_DIR' is not a directory"
