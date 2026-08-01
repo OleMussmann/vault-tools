@@ -45,10 +45,13 @@ config (environment, not the repo):
 EOF
 }
 
-# --help/-h must work without VAULT_DIR set, so this check comes before the
-# `:?` below rather than living only in the final case statement.
+# --help/-h and --version must work without VAULT_DIR set, so this check
+# comes before the `:?` below rather than living only in the final case
+# statement. --version in particular is what a deploy verifies right after
+# a push, before VAULT_DIR is necessarily wired up in that context.
 case "${1:-}" in
   --help|-h) usage; exit 0 ;;
+  --version) echo "vault ${VAULT_TOOLS_REV}"; exit 0 ;;
 esac
 
 # On the pinned (workstation/Pi) build these are guaranteed by
@@ -229,7 +232,6 @@ case "${1:-}" in
   note)       shift; cmd_note "$@" ;;
   save)       shift; cmd_save "$@" ;;
   check)      shift; cmd_check "$@" ;;
-  --version)  echo "vault ${VAULT_TOOLS_REV}" ;;
   "")         usage ;;
   *) die "unknown command '$1' — try 'vault --help'" ;;
 esac
