@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stack — check for and apply Hermes image updates.
+# stack — check for and apply image updates for this stack's services.
 #
 # Runs on the workstation, not in a container.
 # Requires: incus-compose, incus, curl, jq, git.
@@ -7,13 +7,24 @@
 # Expects, in STACK_DIR:
 #   compose.yaml   with  name: hermes
 #                  and   image: nousresearch/hermes-agent:${HERMES_TAG}
+#                  and   image: syncthing/syncthing:${SYNCTHING_TAG}  (if used)
 #   .env           with  HERMES_TAG=v2026.7.30
+#                  and   SYNCTHING_TAG=2.1.2                          (if used)
 #
 # .env holds version pins only — Hermes reads its API keys from
 # /opt/data/.env inside the volume, so this file is safe to commit.
 #
-# Verified 2026-07-31 against incus-compose on IncusOS. See IMPLEMENTATION.md
-# for the test results this encodes.
+# Two known services, hermes and syncthing — see service_config() below.
+# Five things vary per service (registry repo, tag-pattern regex, .env
+# variable, volume to snapshot, version command); everything dangerous
+# (the --pull always no-op trap, snapshot-then-verify) is shared. Adding a
+# third service means adding one case arm, not a plugin architecture.
+#
+# Verified 2026-07-31 (hermes) and 2026-08-02 (syncthing) against
+# incus-compose on IncusOS. See IMPLEMENTATION.md for the test results this
+# encodes, including confirmation that `--recreate <service>` actually
+# scopes — recreating hermes left a running syncthing sidecar's uptime
+# completely undisturbed.
 #
 # Config from the environment, never guessed:
 #   STACK_DIR   path to the directory holding compose.yaml/.env (required)
@@ -29,16 +40,19 @@ die() { echo "error: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 usage:
-  stack check          compare the pinned HERMES_TAG against the newest upstream tag
-  stack update <tag>   snapshot the data volume, pin, recreate, verify
-  stack --help         this text
+  stack check                    compare pinned tags against upstream, all known services
+  stack check <service>          same, scoped to one service
+  stack update <service> <tag>   snapshot, pin, recreate, verify
+  stack --help                   this text
+
+known services: hermes, syncthing
 
 config (environment, not the repo):
-  STACK_DIR       path to the directory holding compose.yaml/.env (required)
-  HERMES_SERVICE  compose service name (default: hermes)
-  INCUS_POOL      storage pool (default: local)
-  HERMES_VOLUME   custom volume name (default: vol-hermes-data)
-  INCUS_PROJECT   incus project (default: detected from compose.yaml's name:)
+  STACK_DIR         path to the directory holding compose.yaml/.env (required)
+  INCUS_POOL        storage pool (default: local)
+  INCUS_PROJECT     incus project (default: detected from compose.yaml's name:)
+  HERMES_VOLUME     hermes's custom volume name (default: vol-hermes-data)
+  SYNCTHING_VOLUME  syncthing's custom volume name (default: vol-syncthing-config)
 EOF
 }
 
@@ -51,15 +65,12 @@ esac
 STACK_DIR="${STACK_DIR:?set STACK_DIR to the path of your hermes stack directory}"
 ENV_FILE="$STACK_DIR/.env"
 COMPOSE_FILE="$STACK_DIR/compose.yaml"
-REPO="nousresearch/hermes-agent"          # canonical registry: docker.io
-SERVICE="${HERMES_SERVICE:-hermes}"
-TAG_RE='^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(\.[0-9]+)?$'
+KNOWN_SERVICES=(hermes syncthing)
 
 # Confirmed on IncusOS: pool is `local` (zfs), and incus-compose names custom
 # volumes vol-<compose-volume>, scoped to a project named after the compose
 # project. Verify with: incus --project <p> storage volume list <pool>
 POOL="${INCUS_POOL:-local}"
-VOLUME="${HERMES_VOLUME:-vol-hermes-data}"
 
 READY_TRIES="${READY_TRIES:-20}"          # 20 x 3s = 60s ceiling
 READY_INTERVAL="${READY_INTERVAL:-3}"
@@ -73,23 +84,53 @@ detect_project() {
 }
 PROJECT="${INCUS_PROJECT:-$(detect_project)}"
 
+# Sets REPO, TAG_RE, ENV_VAR, VOLUME, VERSION_ARGS for the given service.
+# The one trap worth stating loudly: syncthing's VOLUME is its own config
+# volume, never the shared scratch volume. Scratch is disposable by design
+# and will be the largest thing in the deployment — snapshotting it on
+# every update would be backwards.
+service_config() {
+  case "$1" in
+    hermes)
+      REPO="nousresearch/hermes-agent"
+      # v-prefixed CalVer with an optional revision: v2026.7.30, v2026.7.7.2.
+      TAG_RE='^v[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(\.[0-9]+)?$'
+      ENV_VAR="HERMES_TAG"
+      VOLUME="${HERMES_VOLUME:-vol-hermes-data}"
+      VERSION_ARGS=(hermes version)
+      ;;
+    syncthing)
+      REPO="syncthing/syncthing"
+      # Strict three-part semver only. Upstream also publishes latest, edge,
+      # rc, and rolling major/minor aliases (1, 1.29) — all excluded on
+      # purpose, same hygiene as hermes's TAG_RE.
+      TAG_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
+      ENV_VAR="SYNCTHING_TAG"
+      VOLUME="${SYNCTHING_VOLUME:-vol-syncthing-config}"
+      VERSION_ARGS=(syncthing --version)
+      ;;
+    *)
+      die "unknown service '$1' — known: ${KNOWN_SERVICES[*]}"
+      ;;
+  esac
+}
+
 preflight() {
   if ! incus --project "$PROJECT" storage volume show "$POOL" "$VOLUME" >/dev/null 2>&1; then
     echo "cannot find volume '${VOLUME}' on pool '${POOL}' in project '${PROJECT}'" >&2
     echo >&2
     incus --project "$PROJECT" storage volume list "$POOL" >&2 || true
     echo >&2
-    die "set INCUS_POOL / HERMES_VOLUME / INCUS_PROJECT to match"
+    die "set INCUS_POOL / HERMES_VOLUME / SYNCTHING_VOLUME / INCUS_PROJECT to match"
   fi
 }
 
 version_of() {
-  ( cd "$STACK_DIR" && incus-compose exec "$SERVICE" -- hermes version 2>/dev/null ) || true
+  ( cd "$STACK_DIR" && incus-compose exec "$1" -- "${VERSION_ARGS[@]}" 2>/dev/null ) || true
 }
 
 current_tag() {
-  grep -E '^HERMES_TAG=' "$ENV_FILE" | head -1 | cut -d= -f2- \
-    || die "no HERMES_TAG in $ENV_FILE"
+  grep -E "^${ENV_VAR}=" "$ENV_FILE" | head -1 | cut -d= -f2- || true
 }
 
 # Fetching and filtering are deliberately separate. Combined in one pipeline
@@ -101,69 +142,90 @@ fetch_tags() {
     | jq -r '.results[].name'
 }
 
-# Upstream uses v-prefixed CalVer with an optional revision component:
-# v2026.7.30, v2026.7.7.2. Excludes the mutable `latest` and `main` pointers.
 newest_tag() {
   printf '%s\n' "$1" | { grep -E "$TAG_RE" || true; } | sort -V | tail -1
 }
 
-cmd_check() {
-  local cur tags new
+cmd_check_one() {
+  local svc="$1" cur tags new
+  service_config "$svc"
   cur="$(current_tag)"
+  if [[ -z "$cur" ]]; then
+    echo "== ${svc}: no ${ENV_VAR} in ${ENV_FILE} — skipping"
+    return 0
+  fi
 
-  tags="$(fetch_tags)" || die "could not reach the registry"
+  echo "== ${svc}"
+  tags="$(fetch_tags)" || die "could not reach the registry for ${svc}"
   new="$(newest_tag "$tags")"
 
   if [[ -z "$new" ]]; then
     echo "no tags matched ${TAG_RE}" >&2
     echo "upstream may have changed its versioning scheme. Saw:" >&2
     printf '%s\n' "$tags" | head -8 | sed 's/^/  /' >&2
-    die "update TAG_RE in stack"
+    die "update TAG_RE for ${svc} in stack"
   fi
 
   printf 'current: %s\nlatest:  %s\n' "$cur" "$new"
-  [[ "$cur" == "$new" ]] && { echo "up to date"; return 0; }
+  if [[ "$cur" == "$new" ]]; then
+    echo "up to date"
+  else
+    printf 'apply:     stack update %s %s\n' "$svc" "$new"
+  fi
+  echo
+}
 
-  printf '\nchangelog: https://github.com/NousResearch/hermes-agent/releases/tag/%s\n' "$new"
-  printf 'apply:     stack update %s\n' "$new"
+cmd_check() {
+  if [[ -n "${1:-}" ]]; then
+    cmd_check_one "$1"
+  else
+    for svc in "${KNOWN_SERVICES[@]}"; do
+      cmd_check_one "$svc"
+    done
+  fi
 }
 
 cmd_update() {
-  local new="${1:-}" cur snap before after
-  [[ -n "$new" ]] || die "usage: stack update <tag>"
+  local svc="${1:-}" new="${2:-}" cur snap before after
+  [[ -n "$svc" && -n "$new" ]] || die "usage: stack update <service> <tag>"
+  service_config "$svc"
   cur="$(current_tag)"
+  [[ -n "$cur" ]] || die "no ${ENV_VAR} in ${ENV_FILE}"
   [[ "$cur" == "$new" ]] && { echo "already on $new"; return 0; }
 
   preflight
 
-  # The image tag is CalVer (v2026.7.30); `hermes version` reports the app
-  # version (0.19.1). They never match, so verification compares the app
-  # version before and after rather than against the tag.
-  before="$(version_of)"
+  # The image tag scheme and the app's own reported version never match
+  # (hermes: CalVer tag vs semver app version; syncthing: they happen to be
+  # close but are not guaranteed to track), so verification compares the
+  # app version before and after rather than against the tag.
+  before="$(version_of "$svc")"
 
   snap="pre-${new}-$(date +%Y%m%d%H%M)"
   echo "==> snapshotting ${PROJECT}:${POOL}/${VOLUME} as ${snap}"
-  incus --project "$PROJECT" storage volume snapshot "$POOL" "$VOLUME" "$snap"
+  # `snapshot create` — the bare `snapshot <pool> <vol> <name>` shorthand
+  # errors as an unknown command on this Incus version. Confirmed live.
+  incus --project "$PROJECT" storage volume snapshot create "$POOL" "$VOLUME" "$snap"
 
   echo "==> pinning ${cur} -> ${new}"
-  sed -i "s|^HERMES_TAG=.*|HERMES_TAG=${new}|" "$ENV_FILE"
+  sed -i "s|^${ENV_VAR}=.*|${ENV_VAR}=${new}|" "$ENV_FILE"
 
   # incus-compose `ensure` checks that the instance EXISTS, not that it matches
   # the image — `up --pull always` alone refreshes the cache but leaves a
   # running instance on the old image, SILENTLY. --recreate deletes it first.
-  # Custom volumes are untouched, so /opt/data survives. Verified 2026-07-31.
+  # Custom volumes are untouched, so the service's own data survives.
   #
-  # ASSUMPTION: the trailing service argument scopes the recreate. Untested
-  # against a multi-service stack. If it does not scope, every update also
-  # bounces sidecars. Test with any throwaway second service.
+  # --recreate <service> is confirmed to scope per-service, not stack-wide:
+  # recreating hermes left a running syncthing sidecar's uptime completely
+  # undisturbed (2026-08-02). Not an assumption anymore.
   echo "==> pulling and recreating"
-  ( cd "$STACK_DIR" && incus-compose up -d --recreate --pull always "$SERVICE" )
+  ( cd "$STACK_DIR" && incus-compose up -d --recreate --pull always "$svc" )
 
   echo "==> waiting for readiness"
   after=""
   for _ in $(seq 1 "$READY_TRIES"); do
     sleep "$READY_INTERVAL"
-    after="$(version_of)"
+    after="$(version_of "$svc")"
     [[ -n "$after" && "$after" != "$before" ]] && break
     printf '.'
   done
@@ -178,8 +240,8 @@ cmd_update() {
     echo "   after:  ${after:-<no output>}"
     echo "   identical output usually means the instance was not recreated."
     echo "   (false alarm if two tags ship the same app version — check by hand)"
-    echo "   logs:       incus --project ${PROJECT} console ${SERVICE}-1 --show-log"
-    echo "   roll back:  stack update ${cur}"
+    echo "   logs:       incus --project ${PROJECT} console ${svc}-1 --show-log"
+    echo "   roll back:  stack update ${svc} ${cur}"
     echo "   or restore: incus --project ${PROJECT} storage volume restore ${POOL} ${VOLUME} ${snap}"
     exit 1
   fi
@@ -189,7 +251,7 @@ cmd_update() {
   # Commit but never push. Auto-pushing adds auth prompts, rejected pushes and
   # branch-protection failures to a run that just succeeded. Unpushed pins do
   # drift between machines though, so say so rather than stay silent.
-  if git -C "$STACK_DIR" commit -q -m "hermes: ${cur} -> ${new}" -- "$ENV_FILE" 2>/dev/null; then
+  if git -C "$STACK_DIR" commit -q -m "${svc}: ${cur} -> ${new}" -- "$ENV_FILE" 2>/dev/null; then
     echo "==> pinned and committed (not pushed)"
     if git -C "$STACK_DIR" remote | grep -q .; then
       echo "    push when ready: git -C ${STACK_DIR} push"
@@ -198,11 +260,11 @@ cmd_update() {
     echo "==> pinned (not committed — no repo, or nothing to commit)"
   fi
 
-  echo "==> done. rollback: stack update ${cur}"
+  echo "==> done. rollback: stack update ${svc} ${cur}"
 }
 
 case "${1:-check}" in
-  check)  cmd_check ;;
-  update) shift; cmd_update "${1:-}" ;;
-  *)      die "usage: stack {check | update <tag>}" ;;
+  check)  shift; cmd_check "${1:-}" ;;
+  update) shift; cmd_update "${1:-}" "${2:-}" ;;
+  *)      die "usage: stack {check [service] | update <service> <tag>}" ;;
 esac
