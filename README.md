@@ -80,12 +80,17 @@ visible rather than silently possible.
 Pi discovers the shared vault through `~/.pi/agent/AGENTS.md`. Set it up once
 and every Pi session picks it up.
 
-1. Clone the vault repo and point `VAULT_DIR` at it:
+1. Create your vault repo using the scaffolding in [`vault.example/`](./vault.example/):
    ```
-   git clone https://github.com/OleMussmann/vault /path/to/vault
-   export VAULT_DIR=/path/to/vault
+   cp -r vault.example /path/to/my-vault
+   cd /path/to/my-vault
+   git init
+   git add -A && git commit -m "initial vault scaffold"
+   # push to your remote, or keep local
+   export VAULT_DIR=/path/to/my-vault
    ```
    Make `VAULT_DIR` persistent (e.g. `~/.bashrc` or equivalent).
+   Customize `AGENTS.md` and add your first project under `projects/<slug>/`.
 
 2. Install the `vault` CLI via the flake input or `nix run` — see [Use](#use).
 
