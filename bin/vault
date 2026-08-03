@@ -122,7 +122,7 @@ sed_escape_repl() {
 # active-first. Rides the bare `brief` form: "what exists" is also the read
 # that syncs the clone, because cmd_brief pulls before dispatching here.
 cmd_list() {
-  local readmes r slug status desc pad line sorted rest
+  local readmes r slug status desc pad line sorted rest seen_active
   readmes="$(find projects -mindepth 2 -maxdepth 2 -type f -name README.md 2>/dev/null || true)"
   if [[ -z "$readmes" ]]; then
     echo "vault: no projects yet"
@@ -162,12 +162,30 @@ cmd_list() {
     if (( ${#slug} > pad )); then pad=${#slug}; fi
   done <<<"$sorted"
 
+  # Blank line above the whole list regardless, so the project block is
+  # visually separated from the "Already up to date." line that pull emits.
+  # Extra blank between active and done groups when both exist.
+  seen_active=false
+  first=true
   while IFS= read -r line; do
     status="${line%%$'\t'*}"
     rest="${line#*$'\t'}"
     slug="${rest%%$'\t'*}"
     desc="${rest#*$'\t'}"
     [[ "$status" == zzz ]] && status="-"
+
+    if $first; then
+      printf '\n'
+      first=false
+    fi
+
+    # Blank line after the last active project (before first non-active)
+    if [[ "$status" != "active" ]] && $seen_active; then
+      printf '\n'
+      seen_active=false
+    fi
+    [[ "$status" == "active" ]] && seen_active=true
+
     printf '%-*s  %-10s  %s\n' "$pad" "$slug" "$status" "$desc"
   done <<<"$sorted"
 }
