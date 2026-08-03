@@ -40,6 +40,12 @@ note is vault-wide (notes/), filed as notes/YYYY-MM-DD-<project>-<slug>.md —
 <project> is a namespace prefix here, not a subfolder; use a topic like
 "infra" or "general" for anything not tied to one project.
 
+on-disk destination examples:
+  plan     → projects/<project>/plans/YYYY-MM-DD-<slug>.md
+  log      → projects/<project>/log/YYYY-MM-DD-<slug>.md
+  decision → projects/<project>/decisions/YYYY-MM-DD-<slug>.md
+  note     → notes/YYYY-MM-DD-<project>-<slug>.md
+
 config (environment, not the repo):
   VAULT_DIR   path to your vault clone (required)
 EOF
