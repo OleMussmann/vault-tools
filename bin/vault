@@ -27,7 +27,7 @@ die() { echo "vault: error: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 usage:
-  vault brief <project>                   full context on a project, one call
+  vault brief <project>                   full context on a project, one call (syncs first)
   vault note <project> <type> "<title>"   create a note from a template
   vault save "<message>"                  add, commit, and push
   vault check                             validate templates/ and notes against the schema
@@ -83,6 +83,30 @@ check_schema_version() {
 }
 check_schema_version
 
+# Pull-and-rebase with the working tree stashed away. Shared by `brief` (read
+# path — staleness is introduced at read time, so that is where the pull
+# belongs) and `save` (write path).
+#
+# Two failure modes, signalled differently by git:
+#  * genuine upstream conflict (a committed change of yours collides with
+#    newer remote history): `git pull` exits non-zero, a rebase is paused;
+#  * autostash-restore conflict (your UNCOMMITTED edit can't be reapplied
+#    onto the newer base): git exits *zero* and silently leaves unmerged
+#    paths (UU) with the stash parked. Caught here by `--unmerged` check —
+#    otherwise `save` would `git add -A`, commit the conflict markers, and
+#    push them (literally the original "vault challenges" incident).
+pull() {
+  if ! git pull --rebase --autostash; then
+    git rebase --abort 2>/dev/null || true
+    die "PULL CONFLICT: a commit of yours clashes with newer remote history — repo is clean again. Report this; do not resolve it yourself."
+  fi
+  if [[ -n "$(git ls-files --unmerged)" ]]; then
+    git reset -q --hard HEAD
+    die "PULL CONFLICT: an unsaved edit of yours was based on an older version and could not be re-applied — the vault is now the newest version, and your old edit is parked in the stash (git stash list). Re-read the file and redo the change; do not commit the discarded markers."
+  fi
+}
+
+
 slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g'
 }
@@ -95,6 +119,7 @@ sed_escape_repl() {
 
 cmd_brief() {
   local project="${1:?usage: vault brief <project>}"
+  pull
   local dir="projects/$project"
   [[ -d "$dir" ]] || die "no such project: $project (looked in $dir)"
 
@@ -159,14 +184,7 @@ cmd_note() {
 cmd_save() {
   local msg="${1:?usage: vault save \"<message>\"}"
 
-  pull_rebase() {
-    if ! git pull --rebase --autostash; then
-      git rebase --abort 2>/dev/null || true
-      die "CONFLICT on pull --rebase — aborted, repo is clean again. Report this; do not resolve it yourself."
-    fi
-  }
-
-  pull_rebase
+  pull
 
   git add -A
   if git diff --cached --quiet; then
@@ -175,7 +193,7 @@ cmd_save() {
   fi
   git commit -m "$msg" >/dev/null
 
-  pull_rebase
+  pull
   git push
 }
 
