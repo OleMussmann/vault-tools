@@ -68,3 +68,8 @@ No update channel: these change a few times a year, applied by hand
 (the deploy script for Hermes, a flake input bump everywhere else).
 `vault --version` reports the built commit so drift between machines is
 visible rather than silently possible.
+
+## Agent setup
+
+- [`HERMES.md`](./HERMES.md) — setup instructions for Hermes agents (copy-paste prompt)
+- [`PI.md`](./PI.md) — setup reference for Pi (pointer to `~/.pi/agent/AGENTS.md`)
