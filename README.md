@@ -71,5 +71,42 @@ visible rather than silently possible.
 
 ## Agent setup
 
-- [`HERMES.md`](./HERMES.md) — setup instructions for Hermes agents (copy-paste prompt)
-- [`PI.md`](./PI.md) — setup reference for Pi (pointer to `~/.pi/agent/AGENTS.md`)
+### Hermes
+
+[`HERMES.md`](./HERMES.md) — copy-paste this prompt into Hermes to set up vault access.
+
+### Pi
+
+Pi discovers the shared vault through `~/.pi/agent/AGENTS.md`. Set it up once
+and every Pi session picks it up.
+
+1. Clone the vault repo and point `VAULT_DIR` at it:
+   ```
+   git clone https://github.com/OleMussmann/vault /path/to/vault
+   export VAULT_DIR=/path/to/vault
+   ```
+   Make `VAULT_DIR` persistent (e.g. `~/.bashrc` or equivalent).
+
+2. Install the `vault` CLI via the flake input or `nix run` — see [Use](#use).
+
+3. Append this vault section to your `~/.pi/agent/AGENTS.md`:
+
+   ```
+   ## Vault
+
+   A shared git-backed memory vault covering multiple projects.
+   Run `echo $VAULT_DIR` to find it.
+
+   - `vault brief <project>` for full project context in one call.
+   - Read the vault's own `AGENTS.md` for the contract (frontmatter schema, write rules).
+   - `vault --help` for everything else.
+
+   If `vault` is not on `$PATH`, the vault is still plain markdown:
+   find the directory and search it with ripgrep.
+
+   Never create `.pi/skills/` or `.agents/skills/` inside the vault.
+   ```
+
+4. (Optional) Create `~/.pi/agent/APPEND_SYSTEM.md` for behavioral policy
+   (tool preferences, writing conventions — see the vault's own `AGENTS.md`
+   for the full contract).
