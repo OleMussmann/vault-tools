@@ -9,7 +9,7 @@ Set up my Hermes side of the shared vault. Do everything below and confirm when 
 ```markdown
 ---
 name: vault
-description: Use the shared Hermes/Pi git-backed memory vault. Load when a task involves reading or writing vault notes.
+description: Use the shared git-backed vault. Read AGENTS.md first.
 ---
 
 The shared vault is a git repo of markdown files shared with the Pi coding agent and Ole.
