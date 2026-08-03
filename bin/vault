@@ -27,7 +27,7 @@ die() { echo "vault: error: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 usage:
-  vault brief <project>                   full context on a project, one call (syncs first)
+  vault brief [project]                  list projects, or full context on one
   vault note <project> <type> "<title>"   create a note from a template
   vault save "<message>"                  add, commit, and push
   vault check                             validate templates/ and notes against the schema
@@ -98,7 +98,7 @@ check_schema_version
 pull() {
   if ! git pull --rebase --autostash; then
     git rebase --abort 2>/dev/null || true
-    die "PULL CONFLICT: a commit of yours clashes with newer remote history — repo is clean again. Report this; do not resolve it yourself."
+    die "PULL FAILED: git pull --rebase failed (often: a commit of yours clashes with newer remote history, but it may be something else — see the git output above). Repo is clean again. Report this; do not resolve it yourself."
   fi
   if [[ -n "$(git ls-files --unmerged)" ]]; then
     git reset -q --hard HEAD
@@ -117,9 +117,68 @@ sed_escape_repl() {
   printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
 }
 
+# List every project — projects/<slug>/ with a README.md, the same
+# definition cmd_note enforces — as aligned slug/status/description columns,
+# active-first. Rides the bare `brief` form: "what exists" is also the read
+# that syncs the clone, because cmd_brief pulls before dispatching here.
+cmd_list() {
+  local readmes r slug status desc pad line sorted rest
+  readmes="$(find projects -mindepth 2 -maxdepth 2 -type f -name README.md 2>/dev/null || true)"
+  if [[ -z "$readmes" ]]; then
+    echo "vault: no projects yet"
+    return 0
+  fi
+
+  # Tab-separated rows: status<TAB>slug<TAB>desc. Missing/unknown status
+  # maps to zzz so it sorts after superseded.
+  local rows=()
+  while IFS= read -r r; do
+    slug="$(basename "$(dirname "$r")")"
+    status="$(sed -n '/^---$/,/^---$/{ /^---$/d; /^status:/{ s/^status:[[:space:]]*//; p; q } }' "$r")"
+    desc="$(awk '
+      NR==1 && $0 !~ /^---$/ { }          # no frontmatter: treat as body
+      $0 == "---" { if (NR==1) { in_fm=1 } else if (in_fm) { in_fm=0 }; next }
+      !in_fm && !got {
+        if ($0 ~ /^[[:space:]]*$/) next
+        if (heading == "" && $0 ~ /^#/) { heading=$0; next }   # skip # Title, remember it
+        got=1; print $0
+      }
+      END { if (!got && heading != "") print heading }
+    ' "$r")"
+    desc="$(printf '%s' "$desc" | sed -E \
+        -e 's/\[([^]]*)\]\([^)]*\)/\1/g' \
+        -e 's/`//g' \
+        -e 's/\*\*//g' \
+        -e 's/\*//g')"
+    if [[ ${#desc} -gt 64 ]]; then desc="${desc:0:61}..."; fi
+    [[ -n "$status" ]] || status=zzz
+    rows+=("$status"$'\t'"$slug"$'\t'"$desc")
+  done <<<"$readmes"
+
+  sorted="$(printf '%s\n' "${rows[@]}" | sort -k1,1 -k2,2)"
+  pad=0
+  while IFS= read -r line; do
+    slug="${line#*$'\t'}"; slug="${slug%%$'\t'*}"
+    if (( ${#slug} > pad )); then pad=${#slug}; fi
+  done <<<"$sorted"
+
+  while IFS= read -r line; do
+    status="${line%%$'\t'*}"
+    rest="${line#*$'\t'}"
+    slug="${rest%%$'\t'*}"
+    desc="${rest#*$'\t'}"
+    [[ "$status" == zzz ]] && status="-"
+    printf '%-*s  %-10s  %s\n' "$pad" "$slug" "$status" "$desc"
+  done <<<"$sorted"
+}
+
 cmd_brief() {
-  local project="${1:?usage: vault brief <project>}"
   pull
+  if [[ $# -eq 0 ]]; then
+    cmd_list
+    return 0
+  fi
+  local project="${1:?usage: vault brief <project>}"
   local dir="projects/$project"
   [[ -d "$dir" ]] || die "no such project: $project (looked in $dir)"
 
