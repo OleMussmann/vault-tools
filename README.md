@@ -102,6 +102,8 @@ and every Pi session picks it up.
    A shared git-backed memory vault covering multiple projects.
    Run `echo $VAULT_DIR` to find it.
 
+   `vault` works globally — no `cd` needed, it reads `VAULT_DIR` from the environment.
+
    - `vault brief <project>` for full project context in one call.
    - Read the vault's own `AGENTS.md` for the contract (frontmatter schema, write rules).
    - `vault --help` for everything else.
