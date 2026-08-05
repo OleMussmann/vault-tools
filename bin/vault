@@ -102,9 +102,15 @@ check_schema_version
 #    otherwise `save` would `git add -A`, commit the conflict markers, and
 #    push them (literally the original "vault challenges" incident).
 pull() {
-  if ! git pull --rebase --autostash; then
-    git rebase --abort 2>/dev/null || true
-    die "PULL FAILED: git pull --rebase failed (often: a commit of yours clashes with newer remote history, but it may be something else — see the git output above). Repo is clean again. Report this; do not resolve it yourself."
+  if ! git pull --rebase --autostash 2>/dev/null; then
+    # A real conflict pauses mid-rebase (rebase-merge or rebase-apply dir
+    # exists). A network failure exits immediately with no rebase in
+    # progress — treat that as offline and proceed with the local copy.
+    if test -d .git/rebase-merge || test -d .git/rebase-apply; then
+      git rebase --abort 2>/dev/null || true
+      die "PULL FAILED: git pull --rebase failed (often: a commit of yours clashes with newer remote history, but it may be something else — see the git output above). Repo is clean again. Report this; do not resolve it yourself."
+    fi
+    echo "vault: warning: pull failed (offline?), using local copy" >&2
   fi
   if [[ -n "$(git ls-files --unmerged)" ]]; then
     git reset -q --hard HEAD
