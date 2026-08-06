@@ -117,3 +117,12 @@ and every Pi session picks it up.
 4. (Optional) Create `~/.pi/agent/APPEND_SYSTEM.md` for behavioral policy
    (tool preferences, writing conventions — see the vault's own `AGENTS.md`
    for the full contract).
+
+5. (Recommended) Install the `vault-save` skill to enforce `vault save` over
+   raw git commands:
+   ```
+   mkdir -p ~/.pi/agent/skills/vault-save
+   cp skills/vault-save/SKILL.md ~/.pi/agent/skills/vault-save/SKILL.md
+   ```
+   Without this skill, Pi can bypass the vault CLI by running `git` directly,
+   which skips schema validation and the stale-base pull guard.
