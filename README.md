@@ -1,7 +1,10 @@
 # vault-tools
 
 CLI tooling for the [Hermes/Pi shared memory vault](https://github.com/OleMussmann/vault):
-`vault` (read/write the vault) and `stack` (update the Hermes Incus stack).
+`vault` (read/write the vault). Image-update tooling for the Incus stacks
+lives in its own repo now:
+[github.com/OleMussmann/incus-compose-update](https://github.com/OleMussmann/incus-compose-update)
+(ex-`stack`, extracted 2026-08-05).
 
 Packaged with Nix, not shipped inside the vault repo itself — so nothing
 executable lives on a tree that an unattended agent, or untrusted content it
@@ -18,51 +21,53 @@ needs no auth token or SSH URL on any machine that consumes it.
 # flake.nix
 inputs.vault-tools.url = "github:OleMussmann/vault-tools";
 # environment.systemPackages
-[ vault-tools.packages.${system}.vault vault-tools.packages.${system}.stack ]
+[ vault-tools.packages.${system}.vault ]
 ```
 
 Or directly: `nix run github:OleMussmann/vault-tools#vault -- --help`
 
-`vault --help` and `stack {check|update}` are the reference — this README
-only says what the repo is, not how to use either tool.
+`vault --help` is the reference — this README only says what the repo is,
+not how to use the tool.
 
 ## Layout
 
 ```
 bin/vault             # brief, note, save, check, --version — see the vault's AGENTS.md
-bin/stack             # check, update — see IMPLEMENTATION.md in the vault's history/
-flake.nix             # vault, stack: writeShellApplication, pins runtimeInputs, shellchecks at build
-                       # vault-hermes: same source, shellchecked, no Nix wrapper — see below
-deploy/push-vault-to-hermes.sh   # the only supported way to update Hermes's copy
+flake.nix             # vault: writeShellApplication, pins runtimeInputs, shellchecks at build
+                       # vault-portable: same source, shellchecked, no Nix wrapper — see below
+                       # vault-hermes: alias for vault-portable, kept one cycle (A3)
+vault.example/        # scaffold for a new vault (copy, never edit in place)
+HERMES.md             # agent setup prompt for Hermes
+skills/vault-save/    # Pi skill: enforce `vault save` over raw git
 ```
 
 **Two `vault` outputs, for two different environments.** `packages.vault`
 (`writeShellApplication`) is for the workstation/Pi — both run NixOS, so a
 `/nix/store` shebang and a `runtimeInputs`-pinned `PATH` are correct there,
 and the point of `writeShellApplication` (shellcheck at build time) is worth
-keeping. `packages.vault-hermes` is for the Hermes container, which has no
-Nix store at all — that shebang would fail with "not found" before the
-script ever ran (hit this for real 2026-08-01). It builds from the same
-`bin/vault` source, still shellchecked, just installed unwrapped: the
-source's own shebang (`#!/usr/bin/env bash`) and `bin/vault`'s own
-`command -v` preflight (git, sed, grep, rg) stand in for the wrapper's
-`PATH` pin, using whatever's already on the Hermes image's `PATH` — verified
-present there. `stack` has no Hermes variant: it needs
-incus/incus-compose/curl/jq, none of which belong inside Hermes, so it only
-ever runs from the workstation/Pi via the native build.
+keeping. `packages.vault-portable` is for any Nix-less target container
+(the Hermes container, today), which has no Nix store at all — that shebang
+would fail with "not found" before the script ever ran (hit this for real
+2026-08-01). It builds from the same `bin/vault` source, still shellchecked,
+just installed unwrapped: the source's own shebang (`#!/usr/bin/env bash`)
+and `bin/vault`'s own `command -v` preflight (git, sed, grep, rg) stand in
+for the wrapper's `PATH` pin, using whatever's already on the target
+image's `PATH` — verified present on Hermes. `vault-hermes` is the old name,
+now an alias for one cycle; new refs should use `vault-portable`.
 
 **Installing into Hermes is not a plain file push.** `/opt/tools` is
 mounted read-only inside `hermes-1`, and the mount mode is a property of
 the *instance* — flipping hermes-1's own mount to read-write, even briefly,
 would hand the running agent write access to its own tooling for that
-window, which defeats the point. `deploy/push-vault-to-hermes.sh` instead
-stops hermes-1, populates the volume through a disposable helper instance,
-tears the helper down, and restarts hermes-1 — hermes-1's own mount is
-never anything but read-only. Real cost, accepted deliberately: updating
-`vault` on Hermes takes longer than a file push. Given there's no update
-channel and this happens a few times a year, that trade is fine, but only
-because the procedure lives in this script rather than being reconstructed
-by hand each time.
+window, which defeats the point. The procedure lives in the Hermes stack
+repo: `~/code/IncusOS/Hermes/push-vault-to-hermes.sh` — it stops hermes-1,
+populates the volume through a disposable helper instance, tears the helper
+down, and restarts hermes-1; hermes-1's own mount is never anything but
+read-only. Real cost, accepted deliberately: updating `vault` on Hermes
+takes longer than a file push. Given there's no update channel and this
+happens a few times a year, that trade is fine, but only because the
+procedure lives in a script rather than being reconstructed by hand each
+time.
 
 No update channel: these change a few times a year, applied by hand
 (the deploy script for Hermes, a flake input bump everywhere else).
