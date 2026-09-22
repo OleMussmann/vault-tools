@@ -90,6 +90,14 @@ vault save "require vault-tools <short rev>"
 (run in the vault-tools checkout, on the pushed commit). The value matches
 the flake's `lastModifiedDate`, which is what builds report.
 
+**Agent configuration is kept out of the vault.** Agents that can write to
+the vault must not be able to plant configuration for another agent:
+`.claude/`, `.pi/` and `.agents/` directories and `CLAUDE.md` /
+`CLAUDE.local.md` files, at any depth. `vault save` refuses to commit new or
+changed files there (removing them is allowed), `vault brief` and `vault save`
+warn after pulling if any are tracked, and `vault check` fails. Untracked
+local files are not affected — they never reach another machine.
+
 ## Agent setup
 
 ### Hermes

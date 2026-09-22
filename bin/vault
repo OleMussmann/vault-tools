@@ -117,6 +117,32 @@ check_tools_version() {
 }
 check_tools_version
 
+# Agent configuration never belongs in the vault. Agents other than the one
+# reading a config can write here, so a config directory would be a path
+# into that agent's instructions — and settings files can define hooks that
+# run commands. Only tracked files count: untracked local files never reach
+# another machine. Paths are printed as git quotes them, which escapes
+# control characters in these agent-chosen names.
+AGENT_CONFIG_RE='(^"?|/)(\.claude|\.pi|\.agents)/|(^"?|/)CLAUDE(\.local)?\.md"?$'
+
+indent() { local line; while IFS= read -r line; do echo "  $line"; done; }
+
+# Prints the tracked agent-config paths (once per run) and returns 1 if
+# there are any.
+AGENT_CONFIG_WARNED=0
+warn_agent_config() {
+  local found
+  found="$(git ls-files | grep -E "$AGENT_CONFIG_RE" || true)"
+  [[ -z "$found" ]] && return 0
+  [[ "$AGENT_CONFIG_WARNED" -eq 1 ]] && return 1
+  AGENT_CONFIG_WARNED=1
+  {
+    echo "vault: WARNING: agent configuration is tracked in the vault. Do not run any agent with the vault as its working directory until it is removed:"
+    indent <<<"$found"
+  } >&2
+  return 1
+}
+
 # Pull-and-rebase with the working tree stashed away. Shared by `brief` (read
 # path — staleness is introduced at read time, so that is where the pull
 # belongs) and `save` (write path).
@@ -144,6 +170,7 @@ pull() {
     git reset -q --hard HEAD
     die "PULL CONFLICT: an unsaved edit of yours was based on an older version and could not be re-applied — the vault is now the newest version, and your old edit is parked in the stash (git stash list). Re-read the file and redo the change; do not commit the discarded markers."
   fi
+  warn_agent_config || true
 }
 
 
@@ -304,6 +331,16 @@ cmd_save() {
   pull
 
   git add -A
+  # Removing agent configuration is allowed (that is the fix); adding or
+  # changing it is not.
+  local config
+  config="$(git diff --cached --name-only --diff-filter=d | grep -E "$AGENT_CONFIG_RE" || true)"
+  if [[ -n "$config" ]]; then
+    git reset -q
+    echo "vault: refusing to commit agent configuration (nothing was committed):" >&2
+    indent <<<"$config" >&2
+    die "delete these files, then save again"
+  fi
   if git diff --cached --quiet; then
     echo "vault: nothing to commit"
     return 0
@@ -316,9 +353,11 @@ cmd_save() {
 
 # Field names in the YAML frontmatter of $1 — the lines strictly between the
 # first "---" and the next one. sed only; no yaml parser available.
+# A file without frontmatter yields no fields; grep's "no match" status must
+# not abort the script (set -e, pipefail) before check can report it.
 frontmatter_fields() {
   sed -n '/^---$/,/^---$/{ /^---$/d; p }' "$1" \
-    | grep -oE '^[A-Za-z_][A-Za-z0-9_]*:' | tr -d ':'
+    | { grep -oE '^[A-Za-z_][A-Za-z0-9_]*:' || true; } | tr -d ':'
 }
 
 # Files that are expected to carry the frontmatter schema: templates, and
@@ -353,6 +392,8 @@ cmd_check() {
       status=1
     fi
   done < <(schema_bearing_files)
+
+  warn_agent_config || status=1
 
   if [[ "$checked" -eq 0 ]]; then
     echo "vault check: nothing to check yet"
