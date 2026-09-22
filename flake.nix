@@ -15,6 +15,8 @@
         "aarch64-darwin"
       ];
       rev = self.rev or "dirty";
+      # Commit time, YYYYmmddHHMMSS UTC: orders builds for .tools-version.
+      date = self.lastModifiedDate or "unknown";
     in
     {
       packages = forAllSystems (
@@ -32,7 +34,7 @@
               gnugrep
               ripgrep
             ];
-            text = builtins.replaceStrings [ "@VAULT_TOOLS_REV@" ] [ rev ] (
+            text = builtins.replaceStrings [ "@VAULT_TOOLS_REV@" "@VAULT_TOOLS_DATE@" ] [ rev date ] (
               builtins.readFile ./bin/vault
             );
           };
@@ -48,7 +50,8 @@
           # runtimeInputs pinning — those are confirmed present on the stock
           # Hermes image's PATH.
           vault-portable = pkgs.runCommand "vault-portable" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
-            substitute ${./bin/vault} vault --replace-fail '@VAULT_TOOLS_REV@' '${rev}'
+            substitute ${./bin/vault} vault --replace-fail '@VAULT_TOOLS_REV@' '${rev}' \
+              --replace-fail '@VAULT_TOOLS_DATE@' '${date}'
             shellcheck vault
             install -Dm555 vault $out/bin/vault
           '';

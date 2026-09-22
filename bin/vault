@@ -15,6 +15,10 @@
 set -euo pipefail
 
 VAULT_TOOLS_REV="@VAULT_TOOLS_REV@"
+# Commit time of this build, YYYYmmddHHMMSS in UTC (the flake's
+# lastModifiedDate). Orders builds, which the commit hash cannot; compared
+# against the vault's .tools-version below.
+VAULT_TOOLS_DATE="@VAULT_TOOLS_DATE@"
 
 # The schema version this build understands. Bump only alongside a change to
 # SCHEMA_FIELDS below (or any other breaking change to the frontmatter
@@ -31,7 +35,7 @@ usage:
   vault note <project> <type> "<title>"   create a note from a template
   vault save "<message>"                  add, commit, and push
   vault check                             validate templates/ and notes against the schema
-  vault --version                         print the built commit
+  vault --version                         print the built commit and its date
   vault --help                            this text
 
 types: plan | log | note | decision — see AGENTS.md for the frontmatter contract.
@@ -57,7 +61,7 @@ EOF
 # a push, before VAULT_DIR is necessarily wired up in that context.
 case "${1:-}" in
   --help|-h) usage; exit 0 ;;
-  --version) echo "vault ${VAULT_TOOLS_REV}"; exit 0 ;;
+  --version) echo "vault ${VAULT_TOOLS_REV} ${VAULT_TOOLS_DATE}"; exit 0 ;;
 esac
 
 # On the pinned (workstation/Pi) build these are guaranteed by
@@ -88,6 +92,30 @@ check_schema_version() {
   fi
 }
 check_schema_version
+
+fmt_date() { echo "${1:0:4}-${1:4:2}-${1:6:2} ${1:8:2}:${1:10:2} UTC"; }
+
+# Warn-only: .tools-version holds the oldest vault-tools build (by commit
+# time, YYYYmmddHHMMSS UTC) this vault relies on. It is a minimum, bumped by
+# hand when a vault-tools change matters to the vault — not on every commit.
+# The file is agent-writable data, so only a well-formed timestamp is
+# compared, and nothing else from it is printed.
+check_tools_version() {
+  local wanted
+  [[ -f .tools-version ]] || return 0
+  wanted="$(tr -d '[:space:]' < .tools-version)"
+  if [[ ! "$wanted" =~ ^[0-9]{14}$ ]]; then
+    echo "vault: warning: .tools-version is not a YYYYmmddHHMMSS timestamp — ignoring it" >&2
+    return 0
+  fi
+  # Unsubstituted when run straight from the source tree: nothing to compare.
+  [[ "$VAULT_TOOLS_DATE" =~ ^[0-9]{14}$ ]] || return 0
+  # 10#: base ten, so a leading zero is never read as octal.
+  if (( 10#$VAULT_TOOLS_DATE < 10#$wanted )); then
+    echo "vault: warning: this vault needs vault-tools from $(fmt_date "$wanted") or newer; this build is from $(fmt_date "$VAULT_TOOLS_DATE") (${VAULT_TOOLS_REV:0:7}) — update vault-tools" >&2
+  fi
+}
+check_tools_version
 
 # Pull-and-rebase with the working tree stashed away. Shared by `brief` (read
 # path — staleness is introduced at read time, so that is where the pull

@@ -71,8 +71,24 @@ time.
 
 No update channel: these change a few times a year, applied by hand
 (the deploy script for Hermes, a flake input bump everywhere else).
-`vault --version` reports the built commit so drift between machines is
-visible rather than silently possible.
+`vault --version` reports the built commit and its commit time.
+
+**Out-of-date builds warn.** A vault may carry a `.tools-version` file: the
+oldest vault-tools build it relies on, as a commit time `YYYYmmddHHMMSS`
+(UTC). Every `vault` command compares its own build time against it and
+prints a warning when it is older, so a stale install shows up wherever
+`vault` is used — including on Hermes, which cannot update itself but can
+report the warning. After pushing a change the vault depends on (a fix, a new
+behaviour — not every commit), raise the minimum to that commit's time and
+save it:
+
+```
+TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M%S > "$VAULT_DIR/.tools-version"
+vault save "require vault-tools <short rev>"
+```
+
+(run in the vault-tools checkout, on the pushed commit). The value matches
+the flake's `lastModifiedDate`, which is what builds report.
 
 ## Agent setup
 
