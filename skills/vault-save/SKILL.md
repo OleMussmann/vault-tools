@@ -3,8 +3,8 @@ name: vault-save
 description: >
   Enforce `vault save` for all writes to the shared git-backed vault.
   Trigger: any write intent (edit, write, move, delete) inside the
-  $VAULT_DIR directory tree. Prevents stale-base overwrites and
-  schema-violation commits that bypassing the vault CLI would cause.
+  $VAULT_DIR directory tree. Prevents the stale-base overwrites and
+  conflict-marker commits that bypassing the vault CLI would cause.
 ---
 
 # vault-save — Always use `vault save`, never raw git
@@ -20,13 +20,16 @@ bypasses critical guards and WILL corrupt shared state.
    must not.
 
 2. **Always use `vault save "<msg>"`** to commit and push vault
-   changes. It does: pull (stale-base guard) → add → commit
-   (schema-validated) → push. This is the only safe write path.
+   changes. It does: pull (stale-base and conflict guard) → add →
+   commit → push, and refuses to commit agent configuration
+   (`.claude/`, `.pi/`, `.agents/`, `CLAUDE.md`). It does **not**
+   validate the schema — see rule 3. This is the only safe write path.
 
 3. **Before `vault save`, run `vault check`** if you made manual
    edits to vault files outside the `vault note`/`vault brief`
-   commands. It catches schema-violating frontmatter before it
-   reaches the remote.
+   commands. `vault save` does not run it, so this is the only thing
+   that catches schema-violating frontmatter before it reaches the
+   remote.
 
 4. **If `vault save` fails** with a stale-base or conflict message,
    read the error carefully and follow its instructions. Do not
@@ -41,9 +44,9 @@ git commit -m "stuff"
 git push
 ```
 
-This skips the pull (stale-base write risk), skips `vault check`
-(schema violations go through), and bypasses the error-handling
-that `vault save` provides for conflicts.
+This skips the pull (stale-base write risk), skips the refusal of
+agent configuration, and bypasses the error-handling that
+`vault save` provides for conflicts.
 
 ## After (correct)
 

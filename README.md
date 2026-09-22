@@ -140,7 +140,8 @@ and every Pi session picks it up.
    If `vault` is not on `$PATH`, the vault is still plain markdown:
    find the directory and search it with ripgrep.
 
-   Never create `.pi/skills/` or `.agents/skills/` inside the vault.
+   Never create agent configuration inside the vault: no `.claude/`, `.pi/`
+   or `.agents/` directories, no `CLAUDE.md`.
    ```
 
 4. (Optional) Create `~/.pi/agent/APPEND_SYSTEM.md` for behavioral policy
