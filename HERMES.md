@@ -35,7 +35,7 @@ The `vault` CLI is NOT on `$PATH`. It is a portable build at `/opt/tools/vault`
 All real subcommands require `VAULT_DIR` set. Usage:
 
     export VAULT_DIR=/opt/data/vault
-    /opt/tools/vault brief <project>              # full project context in one call
+    /opt/tools/vault brief [project|tag]          # full project context, or the list for one tag
     /opt/tools/vault note <project> <type> "<title>"   # from a template
     /opt/tools/vault check                        # validate against the schema
     /opt/tools/vault save "<msg>"                 # add, commit, push (atomic)

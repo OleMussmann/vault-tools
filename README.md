@@ -134,6 +134,7 @@ and every Pi session picks it up.
    `vault` works globally — no `cd` needed, it reads `VAULT_DIR` from the environment.
 
    - `vault brief <project>` for full project context in one call.
+   - `vault brief <tag>` for the projects carrying that tag (e.g. `work`).
    - Read the vault's own `AGENTS.md` for the contract (frontmatter schema, write rules).
    - `vault --help` for everything else.
 
