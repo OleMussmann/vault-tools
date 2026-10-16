@@ -21,15 +21,16 @@ bypasses critical guards and WILL corrupt shared state.
 
 2. **Always use `vault save "<msg>"`** to commit and push vault
    changes. It does: pull (stale-base and conflict guard) → add →
-   commit → push, and refuses to commit agent configuration
-   (`.claude/`, `.pi/`, `.agents/`, `CLAUDE.md`). It does **not**
-   validate the schema — see rule 3. This is the only safe write path.
+   schema validation → commit → push, refuses to commit agent
+   configuration (`.claude/`, `.pi/`, `.agents/`, `CLAUDE.md`), and
+   refuses messages that look like flags (`vault save --help` is usage,
+   never a commit). This is the only safe write path.
 
-3. **Before `vault save`, run `vault check`** if you made manual
-   edits to vault files outside the `vault note`/`vault brief`
-   commands. `vault save` does not run it, so this is the only thing
-   that catches schema-violating frontmatter before it reaches the
-   remote.
+3. **Schema violations block the save automatically** (since
+   vault-tools 2026-10-16): `vault save` runs `vault check` and refuses
+   to commit when it fails, printing the offending files. A separate
+   manual `vault check` is still useful after edits to catch problems
+   early, but it is no longer the only line of defence.
 
 4. **If `vault save` fails** with a stale-base or conflict message,
    read the error carefully and follow its instructions. Do not

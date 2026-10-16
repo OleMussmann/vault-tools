@@ -33,7 +33,7 @@ usage() {
 usage:
   vault brief [project|tag]              list projects (all or by tag), or full context on one
   vault note <project> <type> "<title>"   create a note from a template
-  vault save "<message>"                  add, commit, and push
+  vault save "<message>"                  add, commit, and push (refuses if vault check fails)
   vault check                             validate templates/ and notes against the schema
   vault --version                         print the built commit and its date
   vault --help                            this text
@@ -361,6 +361,11 @@ cmd_list() {
 }
 
 cmd_brief() {
+  # Read-only, so a flag-shaped argument here is harmless — but a clear
+  # usage error beats "no project '-x'".
+  case "${1:-}" in
+    -*) die "vault brief: '$1' looks like a flag — usage: vault brief [project|tag]" ;;
+  esac
   pull
   if [[ $# -eq 0 ]]; then
     cmd_list
@@ -422,6 +427,13 @@ cmd_brief_project() {
 }
 
 cmd_note() {
+  # Same flag-shape blindness as cmd_save had: a '-' argument here is a
+  # caller mistake (e.g. `vault note --help`) and must die with usage
+  # instead of being consumed as a project name.
+  case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    -*) die "vault note: '$1' looks like a flag — usage: vault note <project> <type> \"<title>\"" ;;
+  esac
   local project="${1:?usage: vault note <project> <type> \"<title>\"}"
   local type="${2:?usage: vault note <project> <type> \"<title>\"}"
   local title="${3:?usage: vault note <project> <type> \"<title>\"}"
@@ -460,6 +472,19 @@ cmd_note() {
 }
 
 cmd_save() {
+  # An argument starting with '-' is a mistake, never a message: without
+  # this guard `vault save --help` committed and pushed a commit literally
+  # titled `--help` (real incident, twice). --help/-h print usage; any
+  # other flag-shaped argument is an error — before any git mutation, so
+  # a typo can never reach the remote. Extra positional arguments are
+  # refused too rather than silently dropped.
+  case "${1:-}" in
+    --help|-h) usage; exit 0 ;;
+    -*) die "vault save: '$1' looks like a flag, not a message — usage: vault save \"<message>\"" ;;
+  esac
+  if [[ $# -gt 1 ]]; then
+    die "vault save: too many arguments (${*}) — usage: vault save \"<message>\""
+  fi
   local msg="${1:?usage: vault save \"<message>\"}"
 
   pull
@@ -479,6 +504,22 @@ cmd_save() {
     echo "vault: nothing to commit"
     return 0
   fi
+
+  # Gate: never commit what `vault check` rejects — schema breaks used to
+  # push cleanly (2026-08-28 double-decision incident). Positioned after
+  # the empty-tree early return above so a save with nothing to commit is
+  # never stranded by an unrelated violation. Output is suppressed on
+  # success and printed on failure, so the refusal names the offending
+  # files. No escape hatch: if a real case for one appears, that is a
+  # deliberate tooling decision, not an omission (vault-setup hardening
+  # plan 2026-08-29, §1).
+  local check_out
+  if ! check_out="$(cmd_check)"; then
+    git reset -q
+    printf '%s\n' "$check_out" >&2
+    die "refusing to commit — fix the files above, then save again"
+  fi
+
   git commit -m "$msg" >/dev/null
 
   pull
@@ -512,6 +553,7 @@ schema_bearing_files() {
 
 cmd_check() {
   local expected f actual missing extra status=0 checked=0
+  local v
   expected="$(printf '%s\n' "${SCHEMA_FIELDS[@]}" | sort)"
 
   while IFS= read -r f; do
@@ -523,6 +565,40 @@ cmd_check() {
       echo "schema mismatch: $f"
       [[ -n "$missing" ]] && echo "  missing: $(tr '\n' ' ' <<<"$missing")"
       [[ -n "$extra" ]] && echo "  unknown: $(tr '\n' ' ' <<<"$extra")"
+      status=1
+    fi
+
+    # Values, not just names: the name diff above happily passed
+    # `confidence: research` to main (2026-08-28 double-decision
+    # incident). Allowed values are the AGENTS.md contract — changing
+    # them is a schema change (bump TOOL_SCHEMA_VERSION). An empty value
+    # is skipped: the name diff already reports the absent field, and a
+    # second complaint about the same file would only add noise. `updated`
+    # is shape-checked as a calendar date; the literal `YYYY-MM-DD` is
+    # accepted because that is the template placeholder which cmd_note
+    # replaces when instantiating.
+    v="$(frontmatter_field "$f" type)"
+    if [[ -n "$v" && ! "$v" =~ ^(plan|log|note|decision)$ ]]; then
+      echo "schema mismatch: $f"
+      echo "  invalid type: '$v' (expected plan, log, note, or decision)"
+      status=1
+    fi
+    v="$(frontmatter_field "$f" status)"
+    if [[ -n "$v" && ! "$v" =~ ^(active|done|superseded)$ ]]; then
+      echo "schema mismatch: $f"
+      echo "  invalid status: '$v' (expected active, done, or superseded)"
+      status=1
+    fi
+    v="$(frontmatter_field "$f" confidence)"
+    if [[ -n "$v" && ! "$v" =~ ^(verified|reported|assumed)$ ]]; then
+      echo "schema mismatch: $f"
+      echo "  invalid confidence: '$v' (expected verified, reported, or assumed)"
+      status=1
+    fi
+    v="$(frontmatter_field "$f" updated)"
+    if [[ -n "$v" && ! "$v" =~ ^(YYYY-MM-DD|[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01]))$ ]]; then
+      echo "schema mismatch: $f"
+      echo "  invalid updated: '$v' (expected YYYY-MM-DD)"
       status=1
     fi
   done < <(schema_bearing_files)
