@@ -60,7 +60,7 @@ mounted read-only inside `hermes-1`, and the mount mode is a property of
 the *instance* — flipping hermes-1's own mount to read-write, even briefly,
 would hand the running agent write access to its own tooling for that
 window, which defeats the point. The procedure lives in the Hermes stack
-repo: `~/code/IncusOS/Hermes/push-vault-to-hermes.sh` — it stops hermes-1,
+repo: `~/code/IncusOS/Hermes/push-vault-cli-to-hermes.sh` — it stops hermes-1,
 populates the volume through a disposable helper instance, tears the helper
 down, and restarts hermes-1; hermes-1's own mount is never anything but
 read-only. Real cost, accepted deliberately: updating `vault` on Hermes
