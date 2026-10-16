@@ -26,9 +26,10 @@ updated: YYYY-MM-DD
 - `verified` beats `reported` beats `assumed` when notes disagree.
 - Project READMEs (each `projects/<slug>/README.md`) additionally carry
   `status:` (active | done | superseded) and `tags:` — a comma-separated,
-  free-form classification (`work`, `hobby`, `hobby/homelab`), required
-  non-empty by `vault check`. `vault brief <tag>` lists the projects with
-  that exact tag; a project directory wins if the name is both.
+  free-form classification (`work`, `hobby`), required non-empty by
+  `vault check`. `vault brief <tag>` lists the projects with that exact
+  tag; a project directory wins if the name is both, and a tag may never
+  share a name with a project slug (`vault check` fails on the collision).
 
 ## Reading
 

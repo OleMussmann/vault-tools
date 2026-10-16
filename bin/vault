@@ -218,9 +218,9 @@ normalize_tags() {
     -e 's/[[:space:]]+$//'
 }
 
-# True when the comma-separated list $1 contains $2 exactly. Never a prefix
-# match: `hobby` does not select `hobby/homelab` — the slash is a naming
-# convention, not hierarchy this tool resolves.
+# True when the comma-separated list $1 contains $2 exactly. Tags are flat
+# lowercase words (cmd_check rejects `/`), so there is no hierarchy to
+# resolve and no prefix or parent/child matching.
 tag_matches() {
   local -a items=()
   local item IFS=','
@@ -532,9 +532,11 @@ cmd_check() {
   # schema-bearing (see schema_bearing_files), and this field is
   # project-level, not entry-level — so no .schema-version or
   # TOOL_SCHEMA_VERSION bump either. Required: present inside the frontmatter
-  # fence, non-empty, each tag a lowercase word with optional / segments.
-  local r tags tag_part
-  local -a tag_parts
+  # fence, non-empty, each tag a flat lowercase word (no `/`: tags are
+  # names, not paths), unique within the README, and not the name of a
+  # project directory.
+  local r tags tag_part other
+  local -a tag_parts seen
   while IFS= read -r r; do
     checked=$((checked + 1))
     tags="$(normalize_tags "$(frontmatter_field "$r" tags)")"
@@ -546,12 +548,34 @@ cmd_check() {
     fi
     tag_parts=()
     IFS=',' read -ra tag_parts <<< "$tags"
+    seen=()
     for tag_part in "${tag_parts[@]}"; do
-      if [[ ! "$tag_part" =~ ^[a-z0-9][a-z0-9-]*([/][a-z0-9][a-z0-9-]*)*$ ]]; then
+      if [[ ! "$tag_part" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
         echo "tags mismatch: $r"
-        echo "  invalid tag: '$tag_part' (lowercase letters, digits, - and /)"
+        echo "  invalid tag: '$tag_part' (lowercase letters, digits, -)"
+        status=1
+        continue
+      fi
+      for other in "${seen[@]}"; do
+        if [[ "$other" == "$tag_part" ]]; then
+          echo "tags mismatch: $r"
+          echo "  duplicate tag: '$tag_part'"
+          status=1
+          break
+        fi
+      done
+      # A tag equal to a project slug is unreachable: cmd_brief tests the
+      # directory first, so `vault brief <tag>` would show that project and
+      # never the tag list. Tags are derived from the READMEs and tested
+      # against the live directory tree, so both directions are covered — a
+      # tag shadowed today, and a project created later that shadows an
+      # existing tag.
+      if [[ -d "projects/$tag_part" ]]; then
+        echo "tag collision: $r"
+        echo "  '$tag_part' is shadowed by projects/$tag_part/ — 'vault brief $tag_part' shows that project, not the tag list"
         status=1
       fi
+      seen+=("$tag_part")
     done
   done < <(project_readmes)
 
