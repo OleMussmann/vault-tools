@@ -64,11 +64,11 @@ case "${1:-}" in
   --version) echo "vault ${VAULT_TOOLS_REV} ${VAULT_TOOLS_DATE}"; exit 0 ;;
 esac
 
-# On the pinned (workstation/Pi) build these are guaranteed by
-# runtimeInputs in flake.nix and this loop is a no-op. The Hermes copy is
-# deliberately unwrapped (see flake.nix's `vault-hermes` output — no
-# /nix/store shebang or PATH, since the Hermes image has no Nix store) and
-# relies on the container's own PATH instead, so it needs its own check —
+# On the Nix-wrapped build these are guaranteed by runtimeInputs in
+# flake.nix and this loop is a no-op. The portable build and a plain copy
+# of this script are unwrapped (no /nix/store shebang or PATH — see
+# flake.nix's `vault-portable` output) and rely on the host's own PATH
+# instead, so they need their own check —
 # failing here beats failing confusingly mid-command.
 for _cmd in git sed grep rg; do
   command -v "$_cmd" >/dev/null 2>&1 || die "required command not found: $_cmd"
@@ -154,7 +154,7 @@ warn_agent_config() {
 #    onto the newer base): git exits *zero* and silently leaves unmerged
 #    paths (UU) with the stash parked. Caught here by `--unmerged` check —
 #    otherwise `save` would `git add -A`, commit the conflict markers, and
-#    push them (literally the original "vault challenges" incident).
+#    push them.
 pull() {
   if ! git pull --rebase --autostash 2>/dev/null; then
     # A real conflict pauses mid-rebase (rebase-merge or rebase-apply dir
@@ -473,8 +473,8 @@ cmd_note() {
 
 cmd_save() {
   # An argument starting with '-' is a mistake, never a message: without
-  # this guard `vault save --help` committed and pushed a commit literally
-  # titled `--help` (real incident, twice). --help/-h print usage; any
+  # this guard `vault save --help` would commit and push a commit titled
+  # `--help`. --help/-h print usage; any
   # other flag-shaped argument is an error — before any git mutation, so
   # a typo can never reach the remote. Extra positional arguments are
   # refused too rather than silently dropped.
@@ -505,14 +505,12 @@ cmd_save() {
     return 0
   fi
 
-  # Gate: never commit what `vault check` rejects — schema breaks used to
-  # push cleanly (2026-08-28 double-decision incident). Positioned after
-  # the empty-tree early return above so a save with nothing to commit is
-  # never stranded by an unrelated violation. Output is suppressed on
-  # success and printed on failure, so the refusal names the offending
-  # files. No escape hatch: if a real case for one appears, that is a
-  # deliberate tooling decision, not an omission (vault-setup hardening
-  # plan 2026-08-29, §1).
+  # Gate: never commit what `vault check` rejects, so a schema break
+  # cannot reach the shared remote. Positioned after the empty-tree early
+  # return above so a save with nothing to commit is never stranded by an
+  # unrelated violation. Output is suppressed on success and printed on
+  # failure, so the refusal names the offending files. No escape hatch:
+  # adding one would be a deliberate tooling decision, not an omission.
   local check_out
   if ! check_out="$(cmd_check)"; then
     git reset -q
@@ -568,9 +566,8 @@ cmd_check() {
       status=1
     fi
 
-    # Values, not just names: the name diff above happily passed
-    # `confidence: research` to main (2026-08-28 double-decision
-    # incident). Allowed values are the AGENTS.md contract — changing
+    # Values, not just names: the name diff above accepts any value, e.g.
+    # `confidence: research`. Allowed values are the AGENTS.md contract — changing
     # them is a schema change (bump TOOL_SCHEMA_VERSION). An empty value
     # is skipped: the name diff already reports the absent field, and a
     # second complaint about the same file would only add noise. `updated`

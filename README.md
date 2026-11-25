@@ -1,16 +1,10 @@
 # vault-tools
 
-CLI tooling for the [Hermes/Pi shared memory vault](https://github.com/OleMussmann/vault):
-`vault` (read/write the vault). Image-update tooling for the Incus stacks
-lives in its own repo now:
-[github.com/OleMussmann/incus-compose-update](https://github.com/OleMussmann/incus-compose-update)
-(ex-`stack`, extracted 2026-08-05).
+`vault`, the CLI for a shared memory vault: a git repo of Markdown files that
+several agents and humans read and write (see [`vault.example/`](./vault.example/)).
 
-Packaged with Nix, not shipped inside the vault repo itself — so nothing
-executable lives on a tree that an unattended agent, or untrusted content it
-ingests, can write to. Full reasoning:
-[`AMENDMENT-1-tooling-repo-split.md`](https://github.com/OleMussmann/vault/blob/main/history/AMENDMENT-1-tooling-repo-split.md)
-in the vault's own history.
+Kept in its own repo, not inside the vault — so nothing executable lives on a
+tree that an unattended agent, or untrusted content it ingests, can write to.
 
 Public on purpose: these scripts hold no secrets, and a public flake input
 needs no auth token or SSH URL on any machine that consumes it.
@@ -26,6 +20,25 @@ inputs.vault-tools.url = "github:OleMussmann/vault-tools";
 
 Or directly: `nix run github:OleMussmann/vault-tools#vault -- --help`
 
+### Without Nix
+
+`bin/vault` is a single Bash script. It needs `bash`, `git`, `sed`, `grep` and
+`rg` (ripgrep) on `PATH`, and checks for them at startup. The source carries
+two placeholders, `@VAULT_TOOLS_REV@` and `@VAULT_TOOLS_DATE@`, that the
+Nix build fills in; install it with them filled in from a checkout:
+
+```
+git clone https://github.com/OleMussmann/vault-tools && cd vault-tools
+sed -e "s/@VAULT_TOOLS_REV@/$(git rev-parse HEAD)/" \
+    -e "s/@VAULT_TOOLS_DATE@/$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M%S)/" \
+    bin/vault > ~/.local/bin/vault
+chmod +x ~/.local/bin/vault
+```
+
+Copying `bin/vault` unfilled also runs, but `vault --version` then prints the
+placeholders and the `.tools-version` check (below) is silently skipped.
+To update, `git pull` and repeat the `sed` step.
+
 `vault --help` is the reference — this README only says what the repo is,
 not how to use the tool.
 
@@ -35,45 +48,34 @@ not how to use the tool.
 bin/vault             # brief, note, save, check, --version — see the vault's AGENTS.md
 flake.nix             # vault: writeShellApplication, pins runtimeInputs, shellchecks at build
                        # vault-portable: same source, shellchecked, no Nix wrapper — see below
-                       # vault-hermes: alias for vault-portable, kept one cycle (A3)
 vault.example/        # scaffold for a new vault (copy, never edit in place)
 HERMES.md             # agent setup prompt for Hermes
 skills/vault-save/    # Pi skill: enforce `vault save` over raw git
 ```
 
 **Two `vault` outputs, for two different environments.** `packages.vault`
-(`writeShellApplication`) is for the workstation/Pi — both run NixOS, so a
-`/nix/store` shebang and a `runtimeInputs`-pinned `PATH` are correct there,
-and the point of `writeShellApplication` (shellcheck at build time) is worth
-keeping. `packages.vault-portable` is for any Nix-less target container
-(the Hermes container, today), which has no Nix store at all — that shebang
-would fail with "not found" before the script ever ran (hit this for real
-2026-08-01). It builds from the same `bin/vault` source, still shellchecked,
-just installed unwrapped: the source's own shebang (`#!/usr/bin/env bash`)
-and `bin/vault`'s own `command -v` preflight (git, sed, grep, rg) stand in
-for the wrapper's `PATH` pin, using whatever's already on the target
-image's `PATH` — verified present on Hermes. `vault-hermes` is the old name,
-now an alias for one cycle; new refs should use `vault-portable`.
+(`writeShellApplication`) is for machines with Nix: a `/nix/store` shebang
+and a `runtimeInputs`-pinned `PATH` are correct there, and shellcheck runs
+at build time. `packages.vault-portable` is for Nix-less targets such as a
+container image, where that shebang would fail with "not found" before the
+script ever ran. It builds from the same `bin/vault` source, still
+shellchecked, just installed unwrapped: the source's own shebang
+(`#!/usr/bin/env bash`) and `bin/vault`'s own `command -v` preflight (git,
+sed, grep, rg) stand in for the wrapper's `PATH` pin, using whatever is on
+the target's `PATH`.
 
-**Installing into Hermes is not a plain file push.** `/opt/tools` is
-mounted read-only inside `hermes-1`, and the mount mode is a property of
-the *instance* — flipping hermes-1's own mount to read-write, even briefly,
-would hand the running agent write access to its own tooling for that
-window, which defeats the point. The procedure lives in the Hermes stack
-repo: `~/code/IncusOS/Hermes/push-vault-cli-to-hermes.sh` — it stops hermes-1,
-populates the volume through a disposable helper instance, tears the helper
-down, and restarts hermes-1; hermes-1's own mount is never anything but
-read-only. Real cost, accepted deliberately: updating `vault` on Hermes
-takes longer than a file push. Given there's no update channel and this
-happens a few times a year, that trade is fine, but only because the
-procedure lives in a script rather than being reconstructed by hand each
-time.
+**Install the CLI read-only for any agent that writes to the vault.** An
+agent must not be able to modify its own `vault`: install it where the
+agent has no write access (e.g. a read-only mount in its container), and
+update it from outside — never by making that location writable from inside
+the agent's environment.
 
 No update channel: these change a few times a year, applied by hand
-(the deploy script for Hermes, a flake input bump everywhere else).
+(a flake input bump, or rebuilding and redeploying `vault-portable`).
 `vault --version` reports the built commit and its commit time.
 
-**Out-of-date builds warn.** A vault may carry a `.tools-version` file: the
+**Out-of-date builds warn.** A vault may carry a `.tools-version` file
+(`vault.example/` ships one, set to the build its `AGENTS.md` describes): the
 oldest vault-tools build it relies on, as a commit time `YYYYmmddHHMMSS`
 (UTC). Every `vault` command compares its own build time against it and
 prints a warning when it is older, so a stale install shows up wherever

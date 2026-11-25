@@ -1,5 +1,5 @@
 {
-  description = "vault and stack — CLI tooling for the Hermes/Pi shared memory vault";
+  description = "vault — CLI for a shared, git-backed Markdown memory vault";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -55,11 +55,6 @@
             shellcheck vault
             install -Dm555 vault $out/bin/vault
           '';
-
-          # A3: renamed canonical output above; keep this alias for one cycle
-          # so existing flake refs (e.g. the Hermes README, older docs) don't
-          # break the day of the rename.
-          vault-hermes = self.packages.${system}.vault-portable;
 
           default = self.packages.${system}.vault;
         }
