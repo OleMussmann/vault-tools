@@ -147,8 +147,8 @@ The same three steps for every harness; only where the pointer goes differs.
    |---|---|
    | Pi | `~/.pi/agent/AGENTS.md` |
    | Claude Code | `~/.claude/CLAUDE.md` |
-   | Codex | `~/.codex/AGENTS.md` |
-   | Hermes | none — see below |
+   | Codex | `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) |
+   | Hermes | none for this — see below |
 
 Beyond that, harnesses differ only in the following.
 
@@ -181,8 +181,10 @@ its own — no `cd`, pipe, redirect or `&&` around it.
 
 ### Hermes
 
-Hermes takes its instructions as skills, not a global file.
-[`HERMES.md`](./HERMES.md) is a prompt to paste into Hermes that sets up a
-`vault` skill (a pointer, like step 3) and the CLI path. It assumes the
-portable build is mounted read-only at `/opt/tools/vault` and the vault
-lives at `/opt/data/vault` — adjust both for your deployment.
+Hermes' only global file, `~/.hermes/SOUL.md`, is for personality and tone,
+and it reads `AGENTS.md` only from its working directory. So the pointer
+goes into a Hermes skill instead: [`HERMES.md`](./HERMES.md) is a prompt to
+paste into Hermes that creates that skill and a memory entry. Fill in its
+two placeholders (vault path, CLI path) first. It has examples for Hermes
+running locally and for Hermes on a server with the portable build on a
+read-only mount.
