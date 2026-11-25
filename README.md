@@ -100,32 +100,26 @@ changed files there (removing them is allowed), `vault brief` and `vault save`
 warn after pulling if any are tracked, and `vault check` fails. Untracked
 local files are not affected — they never reach another machine.
 
-## Agent setup
+## Connecting an agent
 
-### Hermes
+The same three steps for every harness; only where the pointer goes differs.
 
-[`HERMES.md`](./HERMES.md) — copy-paste this prompt into Hermes to set up vault access.
-
-### Pi
-
-Pi discovers the shared vault through `~/.pi/agent/AGENTS.md`. Set it up once
-and every Pi session picks it up.
-
-1. Create your vault repo using the scaffolding in [`vault.example/`](./vault.example/):
+1. **Create the vault** from the scaffold in [`vault.example/`](./vault.example/):
    ```
    cp -r vault.example /path/to/my-vault
    cd /path/to/my-vault
    git init
    git add -A && git commit -m "initial vault scaffold"
    # push to your remote, or keep local
-   export VAULT_DIR=/path/to/my-vault
    ```
-   Make `VAULT_DIR` persistent (e.g. `~/.bashrc` or equivalent).
+   Set `VAULT_DIR=/path/to/my-vault` persistently in the agent's environment.
    Customize `AGENTS.md` and add your first project under `projects/<slug>/`.
 
-2. Install the `vault` CLI via the flake input or `nix run` — see [Use](#use).
+2. **Install `vault`** — see [Use](#use). Read-only for the agent, as above.
 
-3. Append this vault section to your `~/.pi/agent/AGENTS.md`:
+3. **Add this pointer** to the file your harness loads as global
+   instructions. It points at the vault's `AGENTS.md` rather than copying
+   the contract, so there is only one copy to keep current.
 
    ```
    ## Vault
@@ -138,24 +132,57 @@ and every Pi session picks it up.
    - `vault brief <project>` for full project context in one call.
    - `vault brief <tag>` for the projects carrying that tag (e.g. `work`).
    - Read the vault's own `AGENTS.md` for the contract (frontmatter schema, write rules).
+   - Write only through `vault note` and `vault save`, never raw `git`.
    - `vault --help` for everything else.
 
    If `vault` is not on `$PATH`, the vault is still plain markdown:
    find the directory and search it with ripgrep.
 
-   Never create agent configuration inside the vault: no `.claude/`, `.pi/`
-   or `.agents/` directories, no `CLAUDE.md`.
+   Never create agent configuration inside the vault (no `.claude/`, `.pi/`
+   or `.agents/` directories, no `CLAUDE.md`), and never run an agent with
+   the vault as its working directory.
    ```
 
-4. (Optional) Create `~/.pi/agent/APPEND_SYSTEM.md` for behavioral policy
-   (tool preferences, writing conventions — see the vault's own `AGENTS.md`
-   for the full contract).
+   | Harness | Global instructions file |
+   |---|---|
+   | Pi | `~/.pi/agent/AGENTS.md` |
+   | Claude Code | `~/.claude/CLAUDE.md` |
+   | Codex | `~/.codex/AGENTS.md` |
+   | Hermes | none — see below |
 
-5. (Recommended) Install the `vault-save` skill to enforce `vault save` over
-   raw git commands:
-   ```
-   mkdir -p ~/.pi/agent/skills/vault-save
-   cp skills/vault-save/SKILL.md ~/.pi/agent/skills/vault-save/SKILL.md
-   ```
-   Without this skill, Pi can bypass the vault CLI by running `git` directly,
-   which skips schema validation and the stale-base pull guard.
+Beyond that, harnesses differ only in the following.
+
+### Pi and Claude Code: the `vault-save` skill
+
+Recommended. [`skills/vault-save/`](./skills/vault-save/) is a standard
+`SKILL.md` skill that stops the agent from bypassing `vault save` with raw
+`git`, which would skip the pull guard and schema validation. Copy it into
+the harness's skills directory:
+
+```
+# Pi
+mkdir -p ~/.pi/agent/skills/vault-save && cp skills/vault-save/SKILL.md ~/.pi/agent/skills/vault-save/
+# Claude Code
+mkdir -p ~/.claude/skills/vault-save && cp skills/vault-save/SKILL.md ~/.claude/skills/vault-save/
+```
+
+### Claude Code: sandbox
+
+With the Bash sandbox on, `vault` cannot reach the git remote, so `brief`
+silently falls back to the local copy (`pull failed (offline?)`) and `save`
+cannot push. Exclude it in `settings.json`:
+
+```json
+"sandbox": { "excludedCommands": ["vault", "vault *"] }
+```
+
+The exclusion matches the whole Bash command, so `vault` must be called on
+its own — no `cd`, pipe, redirect or `&&` around it.
+
+### Hermes
+
+Hermes takes its instructions as skills, not a global file.
+[`HERMES.md`](./HERMES.md) is a prompt to paste into Hermes that sets up a
+`vault` skill (a pointer, like step 3) and the CLI path. It assumes the
+portable build is mounted read-only at `/opt/tools/vault` and the vault
+lives at `/opt/data/vault` — adjust both for your deployment.
